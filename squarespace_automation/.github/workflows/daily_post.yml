@@ -1,0 +1,35 @@
+name: Daily Blog Poster
+
+on:
+  schedule:
+    # Runs at 09:00 UTC (07:00 AM PKT / Pakistan Time)
+    # Adjust this if your client is in a different timezone (e.g., Australia)
+    - cron: '0 21 * * *'
+  workflow_dispatch: # Allows you to trigger it manually for testing
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          # Essential for Playwright to run in the cloud
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Run Automation
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          SQ_EMAIL: ${{ secrets.SQ_EMAIL }}
+          SQ_PASSWORD: ${{ secrets.SQ_PASSWORD }}
+          GITHUB_ACTIONS: "true"
+        run: python automation.py
