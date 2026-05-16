@@ -2,34 +2,36 @@ name: Daily Blog Poster
 
 on:
   schedule:
-    # Runs at 09:00 UTC (07:00 AM PKT / Pakistan Time)
-    # Adjust this if your client is in a different timezone (e.g., Australia)
+    # Runs at 21:00 UTC (Which is 7:00 AM AEST / 2:00 AM PKT)
     - cron: '0 21 * * *'
-  workflow_dispatch: # Allows you to trigger it manually for testing
+  workflow_dispatch: # Allows you to run it manually for testing
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
       - name: Install dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
-          # Essential for Playwright to run in the cloud
-          playwright install chromium
-          playwright install-deps chromium
+          # This installs the actual browser needed for Playwright
+          playwright install chromium --with-deps
 
-      - name: Run Automation
+      - name: Run automation
         env:
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          # These must match the names in your GitHub Repo Settings > Secrets
           SQ_EMAIL: ${{ secrets.SQ_EMAIL }}
           SQ_PASSWORD: ${{ secrets.SQ_PASSWORD }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           GITHUB_ACTIONS: "true"
+        # If your file is still inside the subfolder, we use the path below:
         run: python automation.py
