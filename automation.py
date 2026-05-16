@@ -13,7 +13,6 @@ from playwright_stealth import Stealth
 # --- CONFIGURATION ---
 SPREADSHEET_ID = '18c9Ly0omriZ6hUUQQVPs4kRx7j_j46tavLtXHdG2jts'
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
-# The base URL for your blog collection
 BASE_URL = "https://coconut-radish-an89.squarespace.com/config/pages/6a00f5fd27ce801ca25aa32e"
 BOOKING_LINK = "https://forms.clickup.com/90161562352/f/2kz0rgqg-676/WM5FMNFXZQWBKHRIBF"
 SCHEDULE_TIME = "07:00 AM"
@@ -35,11 +34,9 @@ def update_sheet_status(service, row_index, status):
 def generate_image(prompt, filename="blog_image.jpg"):
     print(f"Generating image for: {prompt[:50]}...")
     seed = random.randint(1, 1000000)
-    # Adding descriptive context for better AI image results
     full_prompt = f"Professional transport logistics photography, Australian trucking, {prompt}"
     encoded_prompt = urllib.parse.quote(full_prompt)
     url = f"https://pollinations.ai/p/{encoded_prompt}?width=1024&height=1024&seed={seed}&model=flux"
-    
     try:
         response = requests.get(url, timeout=30)
         if response.status_code == 200:
@@ -62,7 +59,6 @@ def run_automation():
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        
         context_args = {
             "viewport": {'width': 1280, 'height': 800},
             "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -79,84 +75,72 @@ def run_automation():
         Stealth().apply_stealth_sync(page)
 
         try:
-            # 1. AUTHENTICATION CHECK
+            # 1. AUTH CHECK
             page.goto("https://account.squarespace.com/config/", wait_until="domcontentloaded")
             time.sleep(5)
-            
+            page.screenshot(path="01_initial_landing.png") # CHECKPOINT 1
+
             if "login" in page.url or page.locator('input[name="email"]').is_visible():
                 print("Performing fresh login...")
                 page.goto("https://account.squarespace.com/login")
                 page.get_by_label("Email address").fill(EMAIL)
                 page.get_by_placeholder("Password", exact=True).fill(PASSWORD)
                 page.get_by_role("button", name="Log In").click()
-                
-                # Verify login by waiting for dashboard
                 page.wait_for_url("**/config**", timeout=60000)
                 context.storage_state(path=AUTH_STATE_PATH)
-                print("Login successful. auth.json updated.")
+                print("Login successful.")
 
-            # 2. ITERATE THROUGH GOOGLE SHEET ROWS
+            # 2. CHECK DATE & PROCESS
+            print(f"Checking Sheet rows for today's date: {today_str}")
+            found_work = False
+            
             for i, row in enumerate(rows):
                 if len(row) >= 4 and row[3].strip() == "Pending" and row[2].strip() == today_str:
+                    found_work = True
                     title, content = row[0], row[1]
-                    print(f"🚀 Starting process for: {title}")
+                    print(f"🚀 Processing: {title}")
                     update_sheet_status(service, i, "Processing")
                     
                     img_path = generate_image(title)
-
-                    # 3. DIRECT COMPOSER NAVIGATION
-                    # We bypass the 'Add' button by going directly to the editor URL
                     composer_url = f"{BASE_URL}/edit"
-                    print(f"Opening Editor: {composer_url}")
                     page.goto(composer_url, wait_until="networkidle")
                     
-                    # Wait for the Title field to ensure the editor is ready
                     page.wait_for_selector('h1[data-content-field="title"]', timeout=45000)
-                    print("Editor loaded successfully.")
+                    page.screenshot(path="02_editor_loaded.png") # CHECKPOINT 2
 
-                    # 4. FILL POST DATA
-                    # Title
                     page.locator('h1[data-content-field="title"] .ProseMirror').fill(title)
-
-                    # Content
                     editor = page.locator('.sqs-block-content .ProseMirror').last
                     footer = f"\n\n---\n**Need a delivery?** [Request a Quote]({BOOKING_LINK})"
                     editor.fill(content + footer)
 
-                    # 5. FEATURED IMAGE UPLOAD
                     if img_path:
-                        print("Uploading featured image...")
                         page.get_by_role("button", name="Settings").click()
                         time.sleep(3)
-                        # Set the file in the hidden input
                         page.locator('input[type="file"]').first.set_input_files(img_path)
-                        time.sleep(10) # Buffer for upload completion
+                        time.sleep(10)
                         page.get_by_role("button", name="Done").or_(page.get_by_role("button", name="Close")).click()
 
-                    # 6. SCHEDULING & SAVING
-                    print("Initiating schedule flow...")
                     page.locator('button[data-test="publish-button-dropdown"]').click()
                     page.get_by_text("Schedule").click()
-                    
-                    # Open Date/Time picker and type
                     page.locator('div[data-test="date-time-picker"]').click()
                     page.keyboard.type(f"{row[2]} {SCHEDULE_TIME}")
                     page.keyboard.press("Enter")
                     time.sleep(2)
-                    
-                    # Final Schedule click
                     page.get_by_role("button", name="SCHEDULE").click()
                     
                     update_sheet_status(service, i, "Posted")
-                    print(f"✅ Success: Post '{title}' is scheduled.")
-                    
-                    # Clean up local image
-                    if img_path and os.path.exists(img_path):
-                        os.remove(img_path)
+                    print(f"✅ Success: {title}")
+                    if img_path and os.path.exists(img_path): os.remove(img_path)
+
+            if not found_work:
+                print("No pending posts found for today. Taking final view screenshot.")
+                page.goto(BASE_URL)
+                time.sleep(5)
+                page.screenshot(path="03_nothing_to_do_today.png") # CHECKPOINT 3
 
         except Exception as e:
-            print(f"❌ Automation Error: {e}")
-            page.screenshot(path="final_debug_error.png")
+            print(f"❌ Error: {e}")
+            page.screenshot(path="final_error_state.png")
         finally:
             browser.close()
 

@@ -2,7 +2,7 @@ name: Daily Blog Poster
 
 on:
   schedule:
-    - cron: '0 21 * * *' # Runs daily at 21:00 UTC
+    - cron: '0 21 * * *'
   workflow_dispatch:
 
 jobs:
@@ -24,15 +24,6 @@ jobs:
           pip install -r requirements.txt
           playwright install chromium --with-deps
 
-      - name: Load session state
-        run: |
-          if [ -n "${{ secrets.AUTH_JSON_BASE64 }}" ]; then
-            echo "${{ secrets.AUTH_JSON_BASE64 }}" | base64 -d > auth.json
-            echo "Session state loaded."
-          else
-            echo "No session state found. Proceeding with fresh login."
-          fi
-
       - name: Run automation
         env:
           SQ_EMAIL: ${{ secrets.SQ_EMAIL }}
@@ -40,14 +31,14 @@ jobs:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           GITHUB_ACTIONS: "true"
         run: |
-          # Finds and runs automation.py regardless of folder structure
           SCRIPT_PATH=$(find . -name "automation.py" | head -n 1)
           python "$SCRIPT_PATH"
 
       - name: Upload Debug Screenshots
-        if: always()
+        if: always() # CRITICAL: This ensures artifacts are saved even on success
         uses: actions/upload-artifact@v4
         with:
           name: debug-screenshots
-          path: "**/*.png"
+          path: |
+            *.png
           retention-days: 1
