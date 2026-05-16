@@ -13,19 +13,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: List files (Troubleshooting)
-        run: ls -R  # This tells us exactly where automation.py is
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install playwright  # Explicitly ensure playwright is there
           playwright install chromium --with-deps
 
       - name: Run automation
@@ -34,17 +30,15 @@ jobs:
           SQ_PASSWORD: ${{ secrets.SQ_PASSWORD }}
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           GITHUB_ACTIONS: "true"
-        # We use 'find' to run the script no matter which folder it is in
         run: |
+          # Finds and runs automation.py regardless of folder structure
           SCRIPT_PATH=$(find . -name "automation.py" | head -n 1)
-          echo "Running script found at: $SCRIPT_PATH"
           python "$SCRIPT_PATH"
 
-      - name: Upload Screenshot on Failure
-        if: always()  # This ensures it runs even if the script fails
+      - name: Upload Debug Screenshots
+        if: always() # IMPORTANT: Runs even if the python script crashes
         uses: actions/upload-artifact@v4
         with:
           name: debug-screenshots
-          path: |
-            error_screenshot.png
-            final_crash_error.png
+          path: "**/*.png"
+          retention-days: 1
