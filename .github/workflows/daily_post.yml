@@ -39,3 +39,12 @@ jobs:
           SCRIPT_PATH=$(find . -name "automation.py" | head -n 1)
           echo "Running script found at: $SCRIPT_PATH"
           python "$SCRIPT_PATH"
+
+      - name: Upload Screenshot on Failure
+        if: always()  # This ensures it runs even if the script fails
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: |
+            error_screenshot.png
+            final_crash_error.png
