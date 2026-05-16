@@ -23,7 +23,6 @@ def get_credentials():
     if creds_json:
         info = json.loads(creds_json)
         return service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
-    # Fallback for local testing
     return service_account.Credentials.from_service_account_file('credentials.json', scopes=SCOPES)
 
 def get_sheet_data(creds):
@@ -55,8 +54,6 @@ def generate_image(title):
 def run_automation():
     creds = get_credentials()
     rows, service = get_sheet_data(creds)
-    
-    # Matches the date format in your Google Sheet (DD/MM/YY)
     today_str = datetime.now().strftime("%d/%m/%y")
     print(f"Checking for articles scheduled for: {today_str}")
 
@@ -64,56 +61,65 @@ def run_automation():
     PASSWORD = os.getenv("SQ_PASSWORD")
     
     if not EMAIL or not PASSWORD:
-        print("Error: Squarespace credentials missing in Secrets.")
+        print("Error: Squarespace credentials missing.")
         return
 
     with sync_playwright() as p:
-        # Headless mode is required for GitHub Actions
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+        # Setting a standard viewport size helps with button visibility
+        context = browser.new_context(viewport={'width': 1280, 'height': 720})
+        page = context.new_page()
 
-        # --- LOGIN FLOW ---
-        page.goto("https://account.squarespace.com/login")
-        page.get_by_label("Email address").fill(EMAIL)
-        
-        # FIXED LOCATOR: Using placeholder to avoid strict mode violation with 'Show Password' button
-        page.get_by_placeholder("Password", exact=True).fill(PASSWORD)
-        
-        page.get_by_role("button", name="Log In").click()
-        page.wait_for_load_state("networkidle")
-        
-        # Navigate to the specific Blog Page
-        page.goto(TARGET_URL)
-        page.wait_for_selector('button:has-text("Add")', timeout=60000)
+        try:
+            # --- LOGIN FLOW ---
+            print("Logging in...")
+            page.goto("https://account.squarespace.com/login", wait_until="networkidle")
+            page.get_by_label("Email address").fill(EMAIL)
+            page.get_by_placeholder("Password", exact=True).fill(PASSWORD)
+            page.get_by_role("button", name="Log In").click()
+            
+            # Wait for login redirect to stabilize
+            page.wait_for_url("**/config**", timeout=60000)
+            print("Login successful.")
 
-        for i, row in enumerate(rows):
-            if len(row) >= 4:
-                title, content, date_val, status = row[0], row[1], row[2], row[3]
-                
-                # Logic: Only process if Pending and matches Today's Date
-                if status.strip() == "Pending" and date_val.strip() == today_str:
-                    print(f"🎯 Processing post: {title}")
-                    update_sheet_status(service, i, "Processing")
+            # --- NAVIGATION ---
+            print(f"Navigating to: {TARGET_URL}")
+            page.goto(TARGET_URL, wait_until="networkidle")
+            
+            # More resilient Add Button search
+            # Squarespace often uses a plus icon or a button with "Add" text
+            add_button = page.locator('button:has-text("Add"), [aria-label="Add Post"], [data-test="blog-add-post"]').first
+            
+            try:
+                add_button.wait_for(state="visible", timeout=30000)
+                print("Found 'Add' button.")
+            except:
+                print("Timeout waiting for 'Add' button. Taking screenshot...")
+                page.screenshot(path="error_screenshot.png")
+                raise Exception("Could not find Add Post button. Check error_screenshot.png in artifacts.")
 
-                    try:
+            for i, row in enumerate(rows):
+                if len(row) >= 4:
+                    title, content, date_val, status = row[0], row[1], row[2], row[3]
+                    
+                    if status.strip() == "Pending" and date_val.strip() == today_str:
+                        print(f"🎯 Processing post: {title}")
+                        update_sheet_status(service, i, "Processing")
+
                         image_path = generate_image(title)
+                        add_button.click()
                         
-                        # Click Add Post
-                        page.get_by_role("button", name="Add").click()
-                        page.wait_for_selector('h1[data-content-field="title"]', timeout=20000)
-                        
-                        # Fill Title
+                        # Wait for editor
+                        page.wait_for_selector('h1[data-content-field="title"]', timeout=30000)
                         page.locator('h1[data-content-field="title"] .ProseMirror').fill(title)
 
-                        # Handle Image Upload
                         if image_path:
                             page.locator('.sqs-block-content').first.hover()
                             page.locator('[data-test="insert-point"]').first.click()
                             page.get_by_text("Image", exact=True).click()
                             page.set_input_files('input[type="file"]', image_path)
-                            time.sleep(8) # Wait for upload
+                            time.sleep(10) # Buffer for upload
 
-                        # Footer with updated URL
                         footer = (
                             f"\n\n---\n"
                             f"**Need a reliable delivery service?**\n"
@@ -121,12 +127,11 @@ def run_automation():
                             f"🏠 [Visit Tribe Rural]({TRIBE_RURAL_HOME})"
                         )
                         
-                        # Fill Content
                         editor = page.locator('.sqs-block-content .ProseMirror').last
                         editor.click()
                         editor.fill(content + footer)
 
-                        # --- SCHEDULING FLOW ---
+                        # --- SCHEDULING ---
                         page.locator('button[data-test="publish-button-dropdown"]').click()
                         page.get_by_text("Schedule").click()
                         
@@ -135,20 +140,19 @@ def run_automation():
                         page.keyboard.type(f"{date_val} {SCHEDULE_TIME}")
                         page.keyboard.press("Enter")
                         
-                        time.sleep(2)
+                        time.sleep(3)
                         page.get_by_role("button", name="SCHEDULE").click()
+                        print(f"Successfully scheduled: {title}")
                         
                         update_sheet_status(service, i, "Posted")
-                        if image_path and os.path.exists(image_path): 
-                            os.remove(image_path)
+                        if image_path and os.path.exists(image_path): os.remove(image_path)
                             
-                    except Exception as e:
-                        print(f"Error during posting: {e}")
-                        update_sheet_status(service, i, "Failed")
-                else:
-                    print(f"Skipping {title}: Date {date_val} is not today or status is not Pending.")
-
-        browser.close()
+        except Exception as e:
+            print(f"Automation failed: {e}")
+            if "page" in locals():
+                page.screenshot(path="final_crash_error.png")
+        finally:
+            browser.close()
 
 if __name__ == "__main__":
     run_automation()
