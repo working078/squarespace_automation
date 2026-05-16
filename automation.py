@@ -118,8 +118,8 @@ def run_automation():
                     # Generate Image
                     img_path = generate_image(title)
 
-                    # Click Add Post
-                    add_button = page.get_by_label("Add Post").or_(page.get_by_text("Add")).first
+                    # Click Add Post (+) in the sidebar
+                    add_button = page.locator('button[aria-label="Add blog post"]').first
                     add_button.wait_for(state="visible", timeout=30000)
                     add_button.click()
                     
