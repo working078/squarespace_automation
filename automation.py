@@ -13,7 +13,7 @@ from playwright_stealth import Stealth
 # --- CONFIGURATION ---
 SPREADSHEET_ID = '18c9Ly0omriZ6hUUQQVPs4kRx7j_j46tavLtXHdG2jts'
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
-# Using the verified subdomain URL
+# Verified internal subdomain URL
 TARGET_URL = "https://coconut-radish-an89.squarespace.com/config/pages/6a00f5fd27ce801ca25aa32e"
 BOOKING_LINK = "https://forms.clickup.com/90161562352/f/2kz0rgqg-676/WM5FMNFXZQWBKHRIBF"
 SCHEDULE_TIME = "07:00 AM"
@@ -33,10 +33,9 @@ def update_sheet_status(service, row_index, status):
         valueInputOption="USER_ENTERED", body=body).execute()
 
 def generate_image(prompt, filename="blog_image.jpg"):
-    """Generates an image using Pollinations AI and saves it locally."""
     print(f"Generating image for: {prompt[:50]}...")
     seed = random.randint(1, 1000000)
-    encoded_prompt = urllib.parse.quote(prompt)
+    encoded_prompt = urllib.parse.quote(f"Professional Australian transport logistics, {prompt}")
     url = f"https://pollinations.ai/p/{encoded_prompt}?width=1024&height=1024&seed={seed}&model=flux"
     
     try:
@@ -44,10 +43,9 @@ def generate_image(prompt, filename="blog_image.jpg"):
         if response.status_code == 200:
             with open(filename, 'wb') as f:
                 f.write(response.content)
-            print(f"Image saved as {filename}")
             return os.path.abspath(filename)
     except Exception as e:
-        print(f"Failed to generate image: {e}")
+        print(f"Image generation failed: {e}")
     return None
 
 def run_automation():
@@ -63,100 +61,120 @@ def run_automation():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         
-        # Session Management
+        # Determine Context (Session vs Fresh)
+        context_args = {
+            "viewport": {'width': 1280, 'height': 800},
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        }
         if os.path.exists(AUTH_STATE_PATH):
-            print("Using existing session state...")
-            context = browser.new_context(
-                storage_state=AUTH_STATE_PATH,
-                viewport={'width': 1280, 'height': 800},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            )
+            print("Loading existing session...")
+            context = browser.new_context(storage_state=AUTH_STATE_PATH, **context_args)
         else:
-            print("No session state found. Will attempt fresh login.")
-            context = browser.new_context(
-                viewport={'width': 1280, 'height': 800},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            )
+            print("No session found. Fresh login required.")
+            context = browser.new_context(**context_args)
 
         page = context.new_page()
         Stealth().apply_stealth_sync(page)
 
         try:
-            # Login Check
+            # 1. Login Logic
             page.goto("https://account.squarespace.com/config/", wait_until="domcontentloaded")
             time.sleep(5)
             
             if "login" in page.url or page.locator('input[name="email"]').is_visible():
-                print("Proceeding to login page...")
-                page.goto("https://account.squarespace.com/login", wait_until="domcontentloaded")
+                print("Logging in...")
+                page.goto("https://account.squarespace.com/login")
                 page.get_by_label("Email address").fill(EMAIL)
                 page.get_by_placeholder("Password", exact=True).fill(PASSWORD)
                 page.get_by_role("button", name="Log In").click()
-                page.wait_for_selector('text=Dashboard', timeout=60000)
+                
+                # Wait for dashboard to confirm success
+                page.wait_for_url("**/config**", timeout=60000)
                 context.storage_state(path=AUTH_STATE_PATH)
-                print("Session saved.")
+                print("Login successful. Session saved.")
 
-            # Navigate to Blog
-            print(f"Navigating to Blog: {TARGET_URL}")
+            # 2. Navigate to Blog Collection
+            print(f"Navigating to Blog Editor: {TARGET_URL}")
             page.goto(TARGET_URL, wait_until="networkidle")
+            time.sleep(8) # Extra buffer for Squarespace's heavy UI
 
+            # 3. Handle the "Add Post" Button (Multi-Strategy)
+            add_button = None
+            selectors = [
+                'button[aria-label="Add blog post"]',
+                'button[data-test="blog-add-post"]',
+                'button:has-text("Add")',
+                '[aria-label="Add Post"]'
+            ]
+
+            # Strategy A: Check Main Page
+            for sel in selectors:
+                loc = page.locator(sel).first
+                if loc.is_visible():
+                    add_button = loc
+                    break
+            
+            # Strategy B: Check Iframes (Site Preview Frame)
+            if not add_button:
+                for frame in page.frames:
+                    for sel in selectors:
+                        loc = frame.locator(sel).first
+                        if loc.is_visible():
+                            add_button = loc
+                            break
+                    if add_button: break
+
+            if not add_button:
+                page.screenshot(path="missing_button_debug.png")
+                raise Exception("Could not locate the 'Add Post' button. See missing_button_debug.png")
+
+            # 4. Processing Rows
             for i, row in enumerate(rows):
                 if len(row) >= 4 and row[3].strip() == "Pending" and row[2].strip() == today_str:
-                    title = row[0]
-                    content = row[1]
-                    print(f"Processing Post: {title}")
+                    title, content = row[0], row[1]
+                    print(f"🎯 Processing: {title}")
                     update_sheet_status(service, i, "Processing")
                     
-                    # Generate Image
                     img_path = generate_image(title)
-
-                    # Click Add Post (+) in sidebar
-                    print("Opening new post editor...")
-                    add_button = page.locator('button[aria-label="Add blog post"]').first
-                    add_button.wait_for(state="visible", timeout=30000)
                     add_button.click()
                     
-                    # --- Reference Step Logic ---
-                    
-                    # Fill Title
-                    page.wait_for_selector('h1[data-content-field="title"]', timeout=20000)
+                    # Wait for editor to appear
+                    page.wait_for_selector('h1[data-content-field="title"]', timeout=30000)
                     page.locator('h1[data-content-field="title"] .ProseMirror').fill(title)
-                    
-                    # Fill Content & Footer
+
+                    # Content & Footer
                     editor = page.locator('.sqs-block-content .ProseMirror').last
-                    footer = f"\n\n---\n**Need a delivery?** [Quote]({BOOKING_LINK})"
+                    footer = f"\n\n---\n**Need a delivery?** [Request a Quote]({BOOKING_LINK})"
                     editor.fill(content + footer)
 
-                    # Upload Featured Image (if generated)
+                    # Featured Image Upload via Settings
                     if img_path:
-                        print("Uploading featured image...")
+                        print("Uploading image...")
                         page.get_by_role("button", name="Settings").click()
                         time.sleep(2)
-                        file_input = page.locator('input[type="file"]').first
-                        file_input.set_input_files(img_path)
-                        time.sleep(5)
-                        page.get_by_role("button", name="Close").or_(page.get_by_role("button", name="Done")).click()
+                        page.locator('input[type="file"]').first.set_input_files(img_path)
+                        time.sleep(8) # Wait for upload finish
+                        page.get_by_role("button", name="Done").or_(page.get_by_role("button", name="Close")).click()
 
-                    # Scheduling Flow
-                    print("Scheduling and publishing...")
+                    # Scheduling
+                    print("Scheduling post...")
                     page.locator('button[data-test="publish-button-dropdown"]').click()
                     page.get_by_text("Schedule").click()
-                    
                     page.locator('div[data-test="date-time-picker"]').click()
                     page.keyboard.type(f"{row[2]} {SCHEDULE_TIME}")
                     page.keyboard.press("Enter")
                     time.sleep(2)
-                    
                     page.get_by_role("button", name="SCHEDULE").click()
                     
                     update_sheet_status(service, i, "Posted")
-                    print(f"Post Successful: {title}")
+                    print(f"✅ Success: {title}")
                     
-                    # Back to blog list
+                    # Return to list for next post
                     page.goto(TARGET_URL, wait_until="networkidle")
+                    time.sleep(5)
 
         except Exception as e:
-            print(f"Error occurred: {e}")
+            print(f"❌ Automation Error: {e}")
             page.screenshot(path="error_state.png")
         finally:
             browser.close()
