@@ -37,6 +37,7 @@ def generate_image(prompt, filename="blog_image.jpg"):
     full_prompt = f"Professional transport logistics photography, Australian trucking, {prompt}"
     encoded_prompt = urllib.parse.quote(full_prompt)
     url = f"https://pollinations.ai/p/{encoded_prompt}?width=1024&height=1024&seed={seed}&model=flux"
+    
     try:
         response = requests.get(url, timeout=30)
         if response.status_code == 200:
@@ -53,7 +54,6 @@ def run_automation():
     result = service.spreadsheets().values().get(spreadsheetId=SPREADSHEET_ID, range="Sheet1!A2:D").execute()
     rows = result.get('values', [])
     
-    today_str = datetime.now().strftime("%d/%m/%y")
     EMAIL = os.getenv("SQ_EMAIL")
     PASSWORD = os.getenv("SQ_PASSWORD")
 
@@ -75,72 +75,98 @@ def run_automation():
         Stealth().apply_stealth_sync(page)
 
         try:
-            # 1. AUTH CHECK
+            # 1. AUTHENTICATION & ERROR CHECK
+            print("Navigating to Squarespace...")
             page.goto("https://account.squarespace.com/config/", wait_until="domcontentloaded")
-            time.sleep(5)
-            page.screenshot(path="01_initial_landing.png") # CHECKPOINT 1
-
-            if "login" in page.url or page.locator('input[name="email"]').is_visible():
-                print("Performing fresh login...")
+            time.sleep(10)
+            
+            # Detect login page or error popup
+            if "login" in page.url or page.locator('input[name="email"]').is_visible() or page.locator('text=Couldn\'t load items').is_visible():
+                print("Session expired or invalid. Performing fresh login...")
                 page.goto("https://account.squarespace.com/login")
                 page.get_by_label("Email address").fill(EMAIL)
                 page.get_by_placeholder("Password", exact=True).fill(PASSWORD)
                 page.get_by_role("button", name="Log In").click()
-                page.wait_for_url("**/config**", timeout=60000)
+                page.wait_for_selector('text=Dashboard', timeout=60000)
                 context.storage_state(path=AUTH_STATE_PATH)
                 print("Login successful.")
 
-            # 2. CHECK DATE & PROCESS
-            print(f"Checking Sheet rows for today's date: {today_str}")
-            found_work = False
-            
+            # 2. ITERATE ROWS
+            found_any_work = False
             for i, row in enumerate(rows):
-                if len(row) >= 4 and row[3].strip() == "Pending" and row[2].strip() == today_str:
-                    found_work = True
-                    title, content = row[0], row[1]
-                    print(f"🚀 Processing: {title}")
-                    update_sheet_status(service, i, "Processing")
-                    
-                    img_path = generate_image(title)
-                    composer_url = f"{BASE_URL}/edit"
-                    page.goto(composer_url, wait_until="networkidle")
-                    
-                    page.wait_for_selector('h1[data-content-field="title"]', timeout=45000)
-                    page.screenshot(path="02_editor_loaded.png") # CHECKPOINT 2
+                if len(row) >= 4 and row[3].strip() == "Pending":
+                    try:
+                        row_date_str = row[2].strip()
+                        row_date = datetime.strptime(row_date_str, "%d/%m/%y")
+                        
+                        # Process if date is today or in the past
+                        if row_date.date() <= datetime.now().date():
+                            found_any_work = True
+                            title, content = row[0], row[1]
+                            print(f"Processing: {title} ({row_date_str})")
+                            update_sheet_status(service, i, "Processing")
+                            
+                            img_path = generate_image(title)
+                            
+                            print(f"Navigating to blog list...")
+                            page.goto(BASE_URL, wait_until="load", timeout=60000)
+                            
+                            # Click Add Post (+) in sidebar
+                            print("Opening new post editor...")
+                            add_button = page.locator('button[aria-label="Add blog post"]').first
+                            add_button.wait_for(state="visible", timeout=45000)
+                            add_button.click()
+                            
+                            # Wait for the editor to initialize
+                            time.sleep(15)
+                            
+                            # --- IFRAME HANDLING ---
+                            print("Accessing editor iframe...")
+                            iframe_handle = page.wait_for_selector('iframe#sqs-site-frame', timeout=60000)
+                            frame = iframe_handle.content_frame()
+                            
+                            # Wait for Title inside frame
+                            frame.wait_for_selector('h1.entry-title .ProseMirror', timeout=30000)
+                            frame.locator('h1.entry-title .ProseMirror').fill(title)
+                            
+                            # Fill Content
+                            frame.locator('.tiptap.ProseMirror').fill(content + f"\n\n---\n**Need a delivery?** [Request a Quote]({BOOKING_LINK})")
 
-                    page.locator('h1[data-content-field="title"] .ProseMirror').fill(title)
-                    editor = page.locator('.sqs-block-content .ProseMirror').last
-                    footer = f"\n\n---\n**Need a delivery?** [Request a Quote]({BOOKING_LINK})"
-                    editor.fill(content + footer)
+                            # Upload Image
+                            if img_path:
+                                print("Uploading featured image...")
+                                page.locator('button[data-test="toolbar-button-settings"]').first.click()
+                                time.sleep(5)
+                                page.locator('input[type="file"]').first.set_input_files(img_path)
+                                time.sleep(15) 
+                                page.get_by_role("button", name="Done").or_(page.get_by_role("button", name="Close")).click()
 
-                    if img_path:
-                        page.get_by_role("button", name="Settings").click()
-                        time.sleep(3)
-                        page.locator('input[type="file"]').first.set_input_files(img_path)
-                        time.sleep(10)
-                        page.get_by_role("button", name="Done").or_(page.get_by_role("button", name="Close")).click()
+                            # Scheduling
+                            print("Scheduling post...")
+                            page.locator('button[data-test="publish-button-dropdown"]').click()
+                            page.get_by_text("Schedule").click()
+                            page.locator('div[data-test="date-time-picker"]').click()
+                            page.keyboard.type(f"{row_date_str} {SCHEDULE_TIME}")
+                            page.keyboard.press("Enter")
+                            time.sleep(5)
+                            page.get_by_role("button", name="SCHEDULE").click()
+                            
+                            update_sheet_status(service, i, "Posted")
+                            print(f"Success: {title}")
+                            if img_path and os.path.exists(img_path): os.remove(img_path)
+                            
+                            # Short break before next post
+                            time.sleep(5)
+                    except Exception as row_error:
+                        print(f"Error on row {i+2}: {row_error}")
+                        continue
 
-                    page.locator('button[data-test="publish-button-dropdown"]').click()
-                    page.get_by_text("Schedule").click()
-                    page.locator('div[data-test="date-time-picker"]').click()
-                    page.keyboard.type(f"{row[2]} {SCHEDULE_TIME}")
-                    page.keyboard.press("Enter")
-                    time.sleep(2)
-                    page.get_by_role("button", name="SCHEDULE").click()
-                    
-                    update_sheet_status(service, i, "Posted")
-                    print(f"✅ Success: {title}")
-                    if img_path and os.path.exists(img_path): os.remove(img_path)
-
-            if not found_work:
-                print("No pending posts found for today. Taking final view screenshot.")
-                page.goto(BASE_URL)
-                time.sleep(5)
-                page.screenshot(path="03_nothing_to_do_today.png") # CHECKPOINT 3
+            if not found_any_work:
+                print("No pending posts found for today or earlier.")
 
         except Exception as e:
-            print(f"❌ Error: {e}")
-            page.screenshot(path="final_error_state.png")
+            print(f"Fatal Error: {e}")
+            page.screenshot(path="fatal_error.png")
         finally:
             browser.close()
 
