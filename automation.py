@@ -8,7 +8,7 @@ from datetime import datetime
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from playwright.sync_api import sync_playwright
-from playwright_stealth import stealth_sync
+from playwright_stealth import Stealth
 
 # --- CONFIGURATION ---
 SPREADSHEET_ID = '18c9Ly0omriZ6hUUQQVPs4kRx7j_j46tavLtXHdG2jts'
@@ -78,7 +78,7 @@ def run_automation():
             )
 
         page = context.new_page()
-        stealth_sync(page) # Apply stealth to bypass detection
+        Stealth().apply_stealth_sync(page) # Apply stealth to bypass detection
 
         try:
             # Check if we are already logged in
@@ -96,8 +96,8 @@ def run_automation():
                 page.get_by_role("button", name="Log In").click()
                 print("Login clicked. Waiting for dashboard...")
                 
-                # Wait for navigation to dashboard
-                page.wait_for_url("**/config**", timeout=60000)
+                # Wait for navigation to dashboard (either /config or main account page)
+                page.wait_for_selector('text=Dashboard', timeout=60000)
                 print("Login successful.")
                 
                 # Save session state for next time

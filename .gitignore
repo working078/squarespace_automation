@@ -16,3 +16,8 @@ logs/
 # Ignore OS-specific files
 .DS_Store
 Thumbs.db
+
+auth_small.json
+auth.json
+error_state.png
+shrink_auth.py
