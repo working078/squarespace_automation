@@ -13,7 +13,7 @@ from playwright_stealth import Stealth
 # --- CONFIGURATION ---
 SPREADSHEET_ID = '18c9Ly0omriZ6hUUQQVPs4kRx7j_j46tavLtXHdG2jts'
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
-TARGET_URL = "https://www.squarespace.com/config/pages/6a00f5fd27ce801ca25aa32e"
+TARGET_URL = "https://coconut-radish-an89.squarespace.com/config/pages/6a00f5fd27ce801ca25aa32e"
 BOOKING_LINK = "https://forms.clickup.com/90161562352/f/2kz0rgqg-676/WM5FMNFXZQWBKHRIBF"
 SCHEDULE_TIME = "07:00 AM"
 AUTH_STATE_PATH = 'auth.json'
