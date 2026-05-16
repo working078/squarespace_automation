@@ -13,6 +13,7 @@ from playwright_stealth import Stealth
 # --- CONFIGURATION ---
 SPREADSHEET_ID = '18c9Ly0omriZ6hUUQQVPs4kRx7j_j46tavLtXHdG2jts'
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
+# Using the verified subdomain URL
 TARGET_URL = "https://coconut-radish-an89.squarespace.com/config/pages/6a00f5fd27ce801ca25aa32e"
 BOOKING_LINK = "https://forms.clickup.com/90161562352/f/2kz0rgqg-676/WM5FMNFXZQWBKHRIBF"
 SCHEDULE_TIME = "07:00 AM"
@@ -62,7 +63,7 @@ def run_automation():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         
-        # Session Management: Load auth state if exists
+        # Session Management
         if os.path.exists(AUTH_STATE_PATH):
             print("Using existing session state...")
             context = browser.new_context(
@@ -78,33 +79,24 @@ def run_automation():
             )
 
         page = context.new_page()
-        Stealth().apply_stealth_sync(page) # Apply stealth to bypass detection
+        Stealth().apply_stealth_sync(page)
 
         try:
-            # Check if we are already logged in
+            # Login Check
             page.goto("https://account.squarespace.com/config/", wait_until="domcontentloaded")
             time.sleep(5)
             
             if "login" in page.url or page.locator('input[name="email"]').is_visible():
-                print("Not logged in. Proceeding to login page...")
+                print("Proceeding to login page...")
                 page.goto("https://account.squarespace.com/login", wait_until="domcontentloaded")
-                
                 page.get_by_label("Email address").fill(EMAIL)
                 page.get_by_placeholder("Password", exact=True).fill(PASSWORD)
-                time.sleep(1) # Human-like pause
-                
                 page.get_by_role("button", name="Log In").click()
-                print("Login clicked. Waiting for dashboard...")
-                
-                # Wait for navigation to dashboard (either /config or main account page)
                 page.wait_for_selector('text=Dashboard', timeout=60000)
-                print("Login successful.")
-                
-                # Save session state for next time
                 context.storage_state(path=AUTH_STATE_PATH)
-                print("Session state saved.")
+                print("Session saved.")
 
-            # STEP 4: Navigate to Blog
+            # Navigate to Blog
             print(f"Navigating to Blog: {TARGET_URL}")
             page.goto(TARGET_URL, wait_until="networkidle")
 
@@ -118,16 +110,19 @@ def run_automation():
                     # Generate Image
                     img_path = generate_image(title)
 
-                    # Click Add Post (+) in the sidebar
+                    # Click Add Post (+) in sidebar
+                    print("Opening new post editor...")
                     add_button = page.locator('button[aria-label="Add blog post"]').first
                     add_button.wait_for(state="visible", timeout=30000)
                     add_button.click()
+                    
+                    # --- Reference Step Logic ---
                     
                     # Fill Title
                     page.wait_for_selector('h1[data-content-field="title"]', timeout=20000)
                     page.locator('h1[data-content-field="title"] .ProseMirror').fill(title)
                     
-                    # Fill Content
+                    # Fill Content & Footer
                     editor = page.locator('.sqs-block-content .ProseMirror').last
                     footer = f"\n\n---\n**Need a delivery?** [Quote]({BOOKING_LINK})"
                     editor.fill(content + footer)
@@ -137,20 +132,16 @@ def run_automation():
                         print("Uploading featured image...")
                         page.get_by_role("button", name="Settings").click()
                         time.sleep(2)
-                        
                         file_input = page.locator('input[type="file"]').first
                         file_input.set_input_files(img_path)
-                        
-                        # Wait for upload to complete
                         time.sleep(5)
                         page.get_by_role("button", name="Close").or_(page.get_by_role("button", name="Done")).click()
 
-                    # Schedule and Publish
-                    print("Scheduling post...")
+                    # Scheduling Flow
+                    print("Scheduling and publishing...")
                     page.locator('button[data-test="publish-button-dropdown"]').click()
                     page.get_by_text("Schedule").click()
                     
-                    # Set Time
                     page.locator('div[data-test="date-time-picker"]').click()
                     page.keyboard.type(f"{row[2]} {SCHEDULE_TIME}")
                     page.keyboard.press("Enter")
@@ -161,7 +152,7 @@ def run_automation():
                     update_sheet_status(service, i, "Posted")
                     print(f"Post Successful: {title}")
                     
-                    # Back to blog list to process next
+                    # Back to blog list
                     page.goto(TARGET_URL, wait_until="networkidle")
 
         except Exception as e:
