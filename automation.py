@@ -135,7 +135,7 @@ def run_automation():
                             # Upload Image
                             if img_path:
                                 print("Uploading featured image...")
-                                page.locator('button[data-test="toolbar-button-settings"]').first.click()
+                                page.locator('[data-testid="settings-icon"]').first.click()
                                 time.sleep(5)
                                 page.locator('input[type="file"]').first.set_input_files(img_path)
                                 time.sleep(15) 
