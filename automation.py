@@ -87,7 +87,7 @@ def run_automation():
                 page.get_by_label("Email address").fill(EMAIL)
                 page.get_by_placeholder("Password", exact=True).fill(PASSWORD)
                 page.get_by_role("button", name="Log In").click()
-                page.wait_for_selector('text=Dashboard', timeout=60000)
+                page.wait_for_url("**/config**", timeout=60000)
                 context.storage_state(path=AUTH_STATE_PATH)
                 print("Login successful.")
 
