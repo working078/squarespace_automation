@@ -29,8 +29,13 @@ jobs:
           SQ_EMAIL: ${{ secrets.SQ_EMAIL }}
           SQ_PASSWORD: ${{ secrets.SQ_PASSWORD }}
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          AUTH_JSON_BASE64: ${{ secrets.AUTH_JSON_BASE64 }}
           GITHUB_ACTIONS: "true"
         run: |
+          if [ -n "$AUTH_JSON_BASE64" ]; then
+            echo "$AUTH_JSON_BASE64" | base64 --decode > auth.json
+            echo "Session loaded from secret."
+          fi
           SCRIPT_PATH=$(find . -name "automation.py" | head -n 1)
           python "$SCRIPT_PATH"
 
