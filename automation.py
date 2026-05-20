@@ -1,10 +1,12 @@
 import os
 import json
 import time
+import re
 import requests
 import random
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from playwright.sync_api import sync_playwright
@@ -17,12 +19,112 @@ BASE_URL = "https://coconut-radish-an89.squarespace.com/config/pages/6a00f5fd27c
 BOOKING_LINK = "https://forms.clickup.com/90161562352/f/2kz0rgqg-676/WM5FMNFXZQWBKHRIBF"
 SCHEDULE_TIME = "07:00 AM"
 AUTH_STATE_PATH = 'auth.json'
+# Blog is AU-based; GitHub Actions runs in UTC — compare dates in Melbourne time.
+LOCAL_TZ = ZoneInfo("Australia/Melbourne")
+SHEETS_DATE_EPOCH = datetime(1899, 12, 30)
+
+DATE_FORMATS = (
+    "%d/%m/%y",
+    "%d/%m/%Y",
+    "%d-%m-%y",
+    "%d-%m-%Y",
+    "%Y-%m-%d",
+    "%Y/%m/%d",
+)
+
 
 def get_credentials():
     creds_json = os.getenv("GOOGLE_CREDENTIALS")
     if creds_json:
         return service_account.Credentials.from_service_account_info(json.loads(creds_json), scopes=SCOPES)
     return service_account.Credentials.from_service_account_file('credentials.json', scopes=SCOPES)
+
+def pad_row(row, width=4):
+    row = list(row)
+    while len(row) < width:
+        row.append("")
+    return row
+
+
+def normalize_status(value):
+    return str(value).strip().casefold()
+
+
+def is_pending_status(value):
+    return normalize_status(value) == "pending"
+
+
+def serial_to_date(serial):
+    days = float(serial)
+    whole_days = int(days)
+    return (SHEETS_DATE_EPOCH + timedelta(days=whole_days)).date()
+
+
+def parse_sheet_date(value):
+    """Parse a sheet date cell (formatted string, serial number, or ISO)."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return serial_to_date(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    if re.fullmatch(r"\d+(\.\d+)?", text):
+        return serial_to_date(float(text))
+    for fmt in DATE_FORMATS:
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def today_local():
+    return datetime.now(LOCAL_TZ).date()
+
+
+def fetch_sheet_rows(service):
+    """Return rows with dates as serial numbers for reliable parsing."""
+    result = service.spreadsheets().values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range="Sheet1!A2:D",
+        valueRenderOption="UNFORMATTED_VALUE",
+        dateTimeRenderOption="SERIAL_NUMBER",
+    ).execute()
+    return result.get("values", [])
+
+
+def select_pending_rows(rows):
+    """Decide which rows to process; log skip reasons for debugging."""
+    today = today_local()
+    print(f"Today (Australia/Melbourne): {today.isoformat()}")
+    pending = []
+    for i, raw_row in enumerate(rows):
+        row = pad_row(raw_row)
+        sheet_row = i + 2
+        status = row[3]
+        if not is_pending_status(status):
+            continue
+        post_date = parse_sheet_date(row[2])
+        if post_date is None:
+            print(
+                f"Row {sheet_row}: skip — could not parse date {row[2]!r} "
+                f"(status={status!r})"
+            )
+            continue
+        if post_date > today:
+            print(
+                f"Row {sheet_row}: skip — scheduled {post_date.isoformat()} "
+                f"is after today {today.isoformat()}"
+            )
+            continue
+        print(
+            f"Row {sheet_row}: queued — date {post_date.isoformat()}, "
+            f"title={row[0][:60]!r}..."
+        )
+        pending.append((i, row, post_date))
+    return pending
+
 
 def update_sheet_status(service, row_index, status):
     range_name = f"Sheet1!D{row_index+2}"
@@ -51,9 +153,12 @@ def generate_image(prompt, filename="blog_image.jpg"):
 def run_automation():
     creds = get_credentials()
     service = build('sheets', 'v4', credentials=creds)
-    result = service.spreadsheets().values().get(spreadsheetId=SPREADSHEET_ID, range="Sheet1!A2:D").execute()
-    rows = result.get('values', [])
-    
+    rows = fetch_sheet_rows(service)
+    work_items = select_pending_rows(rows)
+    if not work_items:
+        print("No pending posts found for today or earlier.")
+        return
+
     EMAIL = os.getenv("SQ_EMAIL")
     PASSWORD = os.getenv("SQ_PASSWORD")
 
@@ -91,99 +196,91 @@ def run_automation():
                 context.storage_state(path=AUTH_STATE_PATH)
                 print("Login successful.")
 
-            # 2. ITERATE ROWS
-            found_any_work = False
-            for i, row in enumerate(rows):
-                if len(row) >= 4 and row[3].strip() == "Pending":
-                    try:
-                        row_date_str = row[2].strip()
-                        row_date = datetime.strptime(row_date_str, "%d/%m/%y")
-                        
-                        # Process if date is today or in the past
-                        if row_date.date() <= datetime.now().date():
-                            found_any_work = True
-                            title, content = row[0], row[1]
-                            print(f"Processing: {title} ({row_date_str})")
-                            update_sheet_status(service, i, "Processing")
-                            
-                            img_path = generate_image(title)
-                            
-                            print(f"Navigating to blog list...")
-                            page.goto(BASE_URL, wait_until="load", timeout=60000)
-                            
-                            # Click Add Post (+) in sidebar
-                            print("Opening new post editor...")
-                            add_button = page.locator('button[aria-label="Add blog post"]').first
-                            add_button.wait_for(state="visible", timeout=45000)
-                            add_button.click()
-                            
-                            # Wait for the editor to initialize
-                            time.sleep(15)
-                            
-                            # --- IFRAME HANDLING ---
-                            print("Accessing editor iframe...")
-                            iframe_handle = page.wait_for_selector('iframe#sqs-site-frame', timeout=60000)
-                            frame = iframe_handle.content_frame()
-                            
-                            # Wait for Title inside frame
-                            frame.wait_for_selector('h1.entry-title .ProseMirror', timeout=30000)
-                            frame.locator('h1.entry-title .ProseMirror').fill(title)
-                            
-                            # Fill Content
-                            frame.locator('.tiptap.ProseMirror').fill(content + f"\n\n---\n**Need a delivery?** [Request a Quote]({BOOKING_LINK})")
+            # 2. PROCESS QUEUED ROWS
+            for i, row, post_date in work_items:
+                try:
+                    title, content = row[0], row[1]
+                    print(f"Processing: {title} ({post_date.isoformat()})")
+                    update_sheet_status(service, i, "Processing")
 
-                            # Upload Image directly into the content (Drag & Drop simulation)
-                            if img_path and os.path.exists(img_path):
-                                print("Uploading image directly into post content...")
-                                import base64
-                                with open(img_path, "rb") as image_file:
-                                    b64_str = base64.b64encode(image_file.read()).decode()
-                                
-                                frame.evaluate(
-                                    f"""(base64str) => {{
-                                        fetch('data:image/jpeg;base64,' + base64str)
-                                        .then(res => res.blob())
-                                        .then(blob => {{
-                                            const file = new File([blob], 'featured.jpg', {{type: 'image/jpeg'}});
-                                            const dt = new DataTransfer();
-                                            dt.items.add(file);
-                                            const target = document.querySelector('.tiptap.ProseMirror');
-                                            
-                                            // Dispatch dragenter and dragover first for safety
-                                            target.dispatchEvent(new DragEvent('dragenter', {{ bubbles: true, cancelable: true, dataTransfer: dt }}));
-                                            target.dispatchEvent(new DragEvent('dragover', {{ bubbles: true, cancelable: true, dataTransfer: dt }}));
-                                            
-                                            // Dispatch drop
-                                            target.dispatchEvent(new DragEvent('drop', {{ bubbles: true, cancelable: true, dataTransfer: dt }}));
-                                        }});
-                                    }}""", b64_str
-                                )
-                                time.sleep(15) # Wait for Squarespace to process the dropped image
+                    img_path = generate_image(title)
 
-                            # Publish immediately
-                            print("Publishing post...")
-                            page.get_by_text("PUBLISH").first.click()
-                            time.sleep(2)
-                            page.get_by_text("PUBLISH").last.click()
-                            time.sleep(5)
-                            
-                            if page.get_by_text("Done").count() > 0:
-                                page.get_by_text("Done").last.click()
-                                
-                            page.screenshot(path=f"after_publish_{i}.png")
+                    print(f"Navigating to blog list...")
+                    page.goto(BASE_URL, wait_until="load", timeout=60000)
 
-                            update_sheet_status(service, i, "Posted")
-                            print(f"Success: {title}")
-                            if img_path and os.path.exists(img_path): os.remove(img_path)
-                            
-                            # Short break before next post
-                            time.sleep(5)
-                    except Exception as row_error:
-                        print(f"Error on row {i+2}: {row_error}")
-                        continue
+                    # Click Add Post (+) in sidebar
+                    print("Opening new post editor...")
+                    add_button = page.locator('button[aria-label="Add blog post"]').first
+                    add_button.wait_for(state="visible", timeout=45000)
+                    add_button.click()
 
-            if not found_any_work:
-                print("No pending posts found for today or earlier.")
+                    # Wait for the editor to initialize
+                    time.sleep(15)
+
+                    # --- IFRAME HANDLING ---
+                    print("Accessing editor iframe...")
+                    iframe_handle = page.wait_for_selector('iframe#sqs-site-frame', timeout=60000)
+                    frame = iframe_handle.content_frame()
+
+                    # Wait for Title inside frame
+                    frame.wait_for_selector('h1.entry-title .ProseMirror', timeout=30000)
+                    frame.locator('h1.entry-title .ProseMirror').fill(title)
+
+                    # Fill Content
+                    frame.locator('.tiptap.ProseMirror').fill(
+                        content + f"\n\n---\n**Need a delivery?** [Request a Quote]({BOOKING_LINK})"
+                    )
+
+                    # Upload Image directly into the content (Drag & Drop simulation)
+                    if img_path and os.path.exists(img_path):
+                        print("Uploading image directly into post content...")
+                        import base64
+                        with open(img_path, "rb") as image_file:
+                            b64_str = base64.b64encode(image_file.read()).decode()
+
+                        frame.evaluate(
+                            f"""(base64str) => {{
+                                fetch('data:image/jpeg;base64,' + base64str)
+                                .then(res => res.blob())
+                                .then(blob => {{
+                                    const file = new File([blob], 'featured.jpg', {{type: 'image/jpeg'}});
+                                    const dt = new DataTransfer();
+                                    dt.items.add(file);
+                                    const target = document.querySelector('.tiptap.ProseMirror');
+
+                                    // Dispatch dragenter and dragover first for safety
+                                    target.dispatchEvent(new DragEvent('dragenter', {{ bubbles: true, cancelable: true, dataTransfer: dt }}));
+                                    target.dispatchEvent(new DragEvent('dragover', {{ bubbles: true, cancelable: true, dataTransfer: dt }}));
+
+                                    // Dispatch drop
+                                    target.dispatchEvent(new DragEvent('drop', {{ bubbles: true, cancelable: true, dataTransfer: dt }}));
+                                }});
+                            }}""", b64_str
+                        )
+                        time.sleep(15)  # Wait for Squarespace to process the dropped image
+
+                    # Publish immediately
+                    print("Publishing post...")
+                    page.get_by_text("PUBLISH").first.click()
+                    time.sleep(2)
+                    page.get_by_text("PUBLISH").last.click()
+                    time.sleep(5)
+
+                    if page.get_by_text("Done").count() > 0:
+                        page.get_by_text("Done").last.click()
+
+                    page.screenshot(path=f"after_publish_{i}.png")
+
+                    update_sheet_status(service, i, "Posted")
+                    print(f"Success: {title}")
+                    if img_path and os.path.exists(img_path):
+                        os.remove(img_path)
+
+                    # Short break before next post
+                    time.sleep(5)
+                except Exception as row_error:
+                    print(f"Error on row {i+2}: {row_error}")
+                    continue
 
         except Exception as e:
             print(f"Fatal Error: {e}")
