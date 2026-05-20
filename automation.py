@@ -163,34 +163,13 @@ def run_automation():
                             # Publish immediately
                             print("Publishing post...")
                             page.get_by_text("PUBLISH").first.click()
-                            time.sleep(3)
-
-                            # Squarespace shows a confirmation popover after clicking PUBLISH.
-                            # We must click "Publish Now" inside it to actually go live.
-                            published = False
-                            publish_now_selectors = [
-                                'button:has-text("Publish Now")',
-                                'button:has-text("PUBLISH NOW")',
-                                '[data-test="publish-now-button"]',
-                                'text="Publish Now"',
-                            ]
-                            for selector in publish_now_selectors:
-                                try:
-                                    btn = page.locator(selector).first
-                                    btn.wait_for(state="visible", timeout=5000)
-                                    btn.click()
-                                    print("Clicked 'Publish Now' confirmation.")
-                                    published = True
-                                    break
-                                except Exception:
-                                    continue
-
-                            if not published:
-                                print("Warning: Could not find 'Publish Now' button — post may be in draft.")
-                                page.screenshot(path=f"publish_dialog_{i}.png")
-
-                            # Wait for Squarespace to finish publishing
-                            time.sleep(8)
+                            time.sleep(2)
+                            page.get_by_text("PUBLISH").last.click()
+                            time.sleep(5)
+                            
+                            if page.get_by_text("Done").count() > 0:
+                                page.get_by_text("Done").last.click()
+                                
                             page.screenshot(path=f"after_publish_{i}.png")
 
                             update_sheet_status(service, i, "Posted")
