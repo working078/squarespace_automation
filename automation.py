@@ -160,15 +160,10 @@ def run_automation():
                                 )
                                 time.sleep(15) # Wait for Squarespace to process the dropped image
 
-                            # Scheduling
-                            print("Scheduling post...")
-                            page.locator('button[data-test="publish-button-dropdown"]').click()
-                            page.get_by_text("Schedule").click()
-                            page.locator('div[data-test="date-time-picker"]').click()
-                            page.keyboard.type(f"{row_date_str} {SCHEDULE_TIME}")
-                            page.keyboard.press("Enter")
-                            time.sleep(5)
-                            page.get_by_role("button", name="SCHEDULE").click()
+                            # Publish immediately
+                            print("Publishing post...")
+                            page.get_by_text("PUBLISH").first.click()
+                            time.sleep(2)
                             
                             update_sheet_status(service, i, "Posted")
                             print(f"Success: {title}")
