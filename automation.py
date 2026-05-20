@@ -132,14 +132,33 @@ def run_automation():
                             # Fill Content
                             frame.locator('.tiptap.ProseMirror').fill(content + f"\n\n---\n**Need a delivery?** [Request a Quote]({BOOKING_LINK})")
 
-                            # Upload Image
-                            if img_path:
-                                print("Uploading featured image...")
-                                page.evaluate('document.querySelector("[data-testid=\\"settings-icon\\"]").click()')
-                                time.sleep(5)
-                                page.locator('input[type="file"]').first.set_input_files(img_path)
-                                time.sleep(15) 
-                                page.get_by_role("button", name="Done").or_(page.get_by_role("button", name="Close")).click()
+                            # Upload Image directly into the content (Drag & Drop simulation)
+                            if img_path and os.path.exists(img_path):
+                                print("Uploading image directly into post content...")
+                                import base64
+                                with open(img_path, "rb") as image_file:
+                                    b64_str = base64.b64encode(image_file.read()).decode()
+                                
+                                frame.evaluate(
+                                    f"""(base64str) => {{
+                                        fetch('data:image/jpeg;base64,' + base64str)
+                                        .then(res => res.blob())
+                                        .then(blob => {{
+                                            const file = new File([blob], 'featured.jpg', {{type: 'image/jpeg'}});
+                                            const dt = new DataTransfer();
+                                            dt.items.add(file);
+                                            const target = document.querySelector('.tiptap.ProseMirror');
+                                            
+                                            // Dispatch dragenter and dragover first for safety
+                                            target.dispatchEvent(new DragEvent('dragenter', {{ bubbles: true, cancelable: true, dataTransfer: dt }}));
+                                            target.dispatchEvent(new DragEvent('dragover', {{ bubbles: true, cancelable: true, dataTransfer: dt }}));
+                                            
+                                            // Dispatch drop
+                                            target.dispatchEvent(new DragEvent('drop', {{ bubbles: true, cancelable: true, dataTransfer: dt }}));
+                                        }});
+                                    }}""", b64_str
+                                )
+                                time.sleep(15) # Wait for Squarespace to process the dropped image
 
                             # Scheduling
                             print("Scheduling post...")
