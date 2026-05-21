@@ -2,6 +2,7 @@ import os
 import json
 import time
 import re
+import base64
 import requests
 import random
 import urllib.parse
@@ -224,17 +225,159 @@ def build_excerpt(content, max_len=220):
 
 
 def format_blog_body(content, post_date):
-    """Structure body copy: paragraphs + footer CTA."""
+    """Article paragraphs plus a professional branded footer (Metro Express style)."""
     raw = str(content).strip()
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", raw) if p.strip()]
     if not paragraphs:
         paragraphs = [raw] if raw else [""]
     body = "\n\n".join(paragraphs)
+    published = post_date.strftime("%d %B %Y")
     footer = (
-        f"\n\n---\n\n"
-        f"**Need a delivery?** [Request a Quote]({BOOKING_LINK})"
+        "\n\n"
+        "—\n\n"
+        "**Ready to book freight or a small move?**\n\n"
+        "Tribe Rural Logistics supports renters and businesses across Mansfield and "
+        "regional Victoria with direct transport, clear communication, and dependable "
+        "local service.\n\n"
+        f"**[Request a quote online →]({BOOKING_LINK})**\n\n"
+        f"*Published {published} · Tribe Rural Logistics Pty Ltd · ABN 40 677 940 840*"
     )
     return body + footer
+
+
+def get_editor_content_frame(page):
+    iframe = page.query_selector("iframe#sqs-site-frame")
+    if not iframe:
+        return None
+    return iframe.content_frame()
+
+
+def host_image_publicly(img_path):
+    """Upload JPEG to a temporary public URL (backup if Pollinations URL is unavailable)."""
+    try:
+        with open(img_path, "rb") as f:
+            response = requests.post(
+                "https://0x0.st",
+                files={"file": ("blog-hero.jpg", f, "image/jpeg")},
+                timeout=60,
+            )
+        if response.status_code == 200 and response.text.strip().startswith("http"):
+            url = response.text.strip()
+            print(f"Image hosted publicly at {url}")
+            return url
+    except Exception as exc:
+        print(f"Public image hosting failed: {exc}")
+    return None
+
+
+def embed_hero_image(page, image_url, img_path, title):
+    """
+    Insert hero image at the top of the post body inside the editor iframe.
+    Uses a public HTTPS URL (primary) or base64 (fallback) — works without (+) buttons.
+    """
+    inner = get_editor_content_frame(page)
+    if not inner:
+        raise RuntimeError("Could not access blog editor iframe")
+
+    if not image_url and img_path and os.path.exists(img_path):
+        image_url = host_image_publicly(img_path)
+
+    if image_url:
+        ok = inner.evaluate(
+            """([src, alt]) => {
+                const pickBody = () => {
+                    for (const ed of document.querySelectorAll('.tiptap.ProseMirror, .ProseMirror')) {
+                        if (ed.closest('h1, .entry-title')) continue;
+                        return ed;
+                    }
+                    return document.querySelector('.tiptap.ProseMirror');
+                };
+                const body = pickBody();
+                if (!body) return false;
+                body.innerHTML = body.innerHTML.replace(/^\\s*\\/\\s*/g, '').trim();
+                const fig = document.createElement('figure');
+                fig.className = 'sqs-image sqs-block-alignment-wrapper';
+                fig.contentEditable = 'false';
+                const img = document.createElement('img');
+                img.src = src;
+                img.alt = alt || '';
+                img.style.cssText = 'width:100%;max-width:100%;height:auto;display:block;margin:0 0 1.5rem;';
+                fig.appendChild(img);
+                if (body.firstChild) {
+                    body.insertBefore(fig, body.firstChild);
+                } else {
+                    body.appendChild(fig);
+                }
+                ['input', 'change', 'blur'].forEach((t) =>
+                    body.dispatchEvent(new Event(t, { bubbles: true }))
+                );
+                return !!body.querySelector('img[src]');
+            }""",
+            [image_url, title],
+        )
+        if ok:
+            print("Hero image embedded in post (public URL).")
+            time.sleep(4)
+            return True
+        print("URL embed returned false; trying base64 fallback...")
+
+    if img_path and os.path.exists(img_path):
+        with open(img_path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode()
+        ok = inner.evaluate(
+            """([data, alt]) => {
+                const pickBody = () => {
+                    for (const ed of document.querySelectorAll('.tiptap.ProseMirror, .ProseMirror')) {
+                        if (ed.closest('h1, .entry-title')) continue;
+                        return ed;
+                    }
+                    return document.querySelector('.tiptap.ProseMirror');
+                };
+                const body = pickBody();
+                if (!body) return false;
+                const fig = document.createElement('figure');
+                fig.className = 'sqs-image sqs-block-alignment-wrapper';
+                const img = document.createElement('img');
+                img.src = 'data:image/jpeg;base64,' + data;
+                img.alt = alt || '';
+                img.style.cssText = 'width:100%;max-width:100%;height:auto;display:block;margin:0 0 1.5rem;';
+                fig.appendChild(img);
+                if (body.firstChild) {
+                    body.insertBefore(fig, body.firstChild);
+                } else {
+                    body.appendChild(fig);
+                }
+                ['input', 'change', 'blur'].forEach((t) =>
+                    body.dispatchEvent(new Event(t, { bubbles: true }))
+                );
+                return true;
+            }""",
+            [b64, title],
+        )
+        if ok:
+            print("Hero image embedded in post (base64).")
+            time.sleep(4)
+            return True
+
+    return False
+
+
+def add_post_image(page, frame, img_path, image_url, title):
+    """Add hero image — URL embed first, then (+) upload as last resort."""
+    if embed_hero_image(page, image_url, img_path, title):
+        return
+    if img_path and os.path.exists(img_path):
+        try:
+            _insert_via_block_plus(page, frame, img_path)
+            print("Image uploaded via block (+) menu.")
+            return
+        except Exception as exc:
+            page.screenshot(path="image_upload_failed.png")
+            raise RuntimeError(
+                "Could not add image to post (URL embed and block upload both failed). "
+                f"Last error: {exc}"
+            ) from exc
+    raise RuntimeError("No image file or URL available for this post.")
 
 
 def dismiss_site_settings_modal(page):
@@ -515,17 +658,6 @@ def publish_post(page, screenshot_suffix=""):
                 continue
 
 
-def insert_image_in_editor(page, frame, img_path):
-    """Add an image block above the body using the (+) insert controls."""
-    print(f"Inserting image in post editor: {img_path}")
-    try:
-        _insert_via_block_plus(page, frame, img_path)
-        print("Image upload succeeded via block (+) menu.")
-    except Exception as exc:
-        page.screenshot(path="editor_insert_failed.png")
-        raise RuntimeError(f"block plus: {exc}") from exc
-
-
 def try_publish_menu_post_settings(page, img_path=None, excerpt=None):
     """
     Optional fallback: PUBLISH dropdown → post settings (thumbnail field).
@@ -602,45 +734,6 @@ def try_publish_menu_post_settings(page, img_path=None, excerpt=None):
     return True
 
 
-def configure_post_metadata(page, frame, img_path=None, excerpt=None):
-    """Upload hero/card image and set excerpt when controls are available."""
-    dismiss_site_settings_modal(page)
-    image_ok = not img_path
-
-    if img_path and os.path.exists(img_path):
-        errors = []
-        try:
-            insert_image_in_editor(page, frame, img_path)
-            image_ok = True
-            print("Image upload succeeded via editor image block.")
-        except Exception as exc:
-            errors.append(f"editor: {exc}")
-            dismiss_site_settings_modal(page)
-            try:
-                if try_publish_menu_post_settings(page, img_path=img_path, excerpt=excerpt):
-                    image_ok = True
-                    print("Image upload succeeded via publish menu settings.")
-                else:
-                    errors.append("publish menu: panel not available")
-            except Exception as menu_exc:
-                errors.append(f"publish menu: {menu_exc}")
-                page.keyboard.press("Escape")
-
-        if not image_ok:
-            page.screenshot(path="image_upload_failed.png")
-            if os.getenv("SKIP_IMAGE_ON_FAIL", "true").lower() == "true":
-                print("WARNING: Image upload failed — continuing to publish (SKIP_IMAGE_ON_FAIL=true).")
-                print("Errors: " + "; ".join(errors))
-            else:
-                raise RuntimeError("Image upload failed — " + "; ".join(errors))
-
-    if excerpt and image_ok:
-        try:
-            try_publish_menu_post_settings(page, excerpt=excerpt)
-        except Exception:
-            print("Excerpt not set; blog listing will use the opening paragraph.")
-
-
 def generate_image(prompt, filename="blog_image.jpg"):
     print(f"Generating image for: {prompt[:50]}...")
     seed = random.randint(1, 1000000)
@@ -662,12 +755,12 @@ def generate_image(prompt, filename="blog_image.jpg"):
                 with open(filename, "wb") as f:
                     f.write(response.content)
                 print(f"Image saved ({len(response.content) // 1024} KB) from {url.split('/')[2]}")
-                return os.path.abspath(filename)
+                return os.path.abspath(filename), url
             preview = response.content[:40]
             print(f"Bad image from {url.split('/')[2]}: status={response.status_code}, bytes={len(response.content)}, head={preview!r}")
         except Exception as e:
             print(f"Request failed for {url.split('/')[2]}: {e}")
-    return None
+    return None, None
 
 def run_automation():
     creds = get_credentials()
@@ -725,7 +818,7 @@ def run_automation():
                     print(f"Processing row {sheet_row}: {title} ({post_date.isoformat()})")
                     update_sheet_status(service, tab, offset, "Processing")
 
-                    img_path = generate_image(title)
+                    img_path, image_url = generate_image(title)
 
                     print(f"Navigating to blog list...")
                     page.goto(BASE_URL, wait_until="load", timeout=60000)
@@ -751,18 +844,16 @@ def run_automation():
                     frame.locator('h1.entry-title .ProseMirror').fill(title)
                     time.sleep(1)
 
-                    # Image first (hero/card), then body text below it
-                    if not img_path:
-                        print("WARNING: No valid JPEG generated — post will publish without image.")
-                    configure_post_metadata(
-                        page,
-                        frame,
-                        img_path=img_path if img_path and os.path.exists(img_path) else None,
-                        excerpt=build_excerpt(content),
-                    )
-
                     body_text = format_blog_body(content, post_date)
                     frame.locator('.tiptap.ProseMirror').last.fill(body_text)
+                    time.sleep(1)
+
+                    if img_path or image_url:
+                        print("Adding hero image to post...")
+                        add_post_image(page, frame, img_path, image_url, title)
+                    else:
+                        raise RuntimeError("Image generation failed — cannot publish without hero image.")
+
                     page.screenshot(path=f"before_publish_{offset}.png")
 
                     publish_post(page, screenshot_suffix=str(offset))
