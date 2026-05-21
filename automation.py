@@ -677,67 +677,84 @@ def upload_featured_image_in_publish_dialog(page, img_path):
     return False
 
 
-def publish_post(page, img_path=None, screenshot_suffix=""):
+def run_publish_confirmation_flow(page, img_path=None):
     """
-    Publish flow that worked in this repo: PUBLISH → dialog → PUBLISH again (last) or Publish Now.
-    Does not hard-fail if 'Publish Now' text is missing (Squarespace UI varies).
+    Bulletproof publish: dropdown → Publish option → confirmation modal → 8s API buffer.
     """
-    print("Publishing post...")
     dismiss_site_settings_modal(page)
     page.keyboard.press("Escape")
     time.sleep(0.5)
-
     save_post_draft(page)
 
-    publish_buttons = _visible_publish_buttons(page)
-    if not publish_buttons:
-        page.screenshot(path=f"publish_btn_missing_{screenshot_suffix}.png")
-        raise RuntimeError("No visible PUBLISH button found.")
+    # 6. PUBLISHING & CONFIRMATION FLOW
+    print("Initiating direct publish flow...")
 
-    publish_buttons[0].click(timeout=10000)
-    print("Clicked PUBLISH (opens publish dialog).")
+    publish_dropdown = page.locator('button[data-test="publish-button-dropdown"]').or_(
+        page.get_by_role("button", name=re.compile(r"Publish", re.I))
+    )
+    publish_dropdown.wait_for(state="visible", timeout=15000)
+    publish_dropdown.click()
+    time.sleep(3)  # Let the flyout menu render completely
+
+    publish_option = page.get_by_text("Publish").or_(
+        page.get_by_role("button", name=re.compile(r"Publish Immediately", re.I))
+    )
+    if publish_option.first.is_visible():
+        publish_option.first.click()
+        print("Clicked Publish option in dropdown.")
+    else:
+        print("Publish option not visible — trying main PUBLISH toolbar button.")
+        buttons = _visible_publish_buttons(page)
+        if buttons:
+            buttons[0].click()
     time.sleep(3)
 
     upload_featured_image_in_publish_dialog(page, img_path)
 
-    if not _try_publish_now_soft(page):
-        if len(publish_buttons) > 1:
-            publish_buttons[-1].click(force=True, timeout=10000)
-            print("Clicked PUBLISH again (confirmation — last visible button).")
+    print("Checking for final confirmation modal...")
+    final_publish_btn = (
+        page.locator('button:has-text("PUBLISH")')
+        .or_(page.locator('button:has-text("Publish Now")'))
+        .or_(page.locator('[data-test="publish-now-button"]'))
+        .last
+    )
+
+    if final_publish_btn.is_visible():
+        print("Clicking final confirmation button.")
+        final_publish_btn.click()
+        time.sleep(8)
+    else:
+        print("No secondary confirmation modal detected — trying fallback PUBLISH clicks.")
+        if _try_publish_now_soft(page):
+            time.sleep(8)
         else:
             extra = _visible_publish_buttons(page)
             if len(extra) > 1:
-                extra[-1].click(force=True, timeout=10000)
-                print("Clicked PUBLISH confirmation (new button in dialog).")
+                extra[-1].click(force=True)
+                time.sleep(8)
             elif len(extra) == 1:
-                extra[0].click(force=True, timeout=10000)
-                print("Clicked single PUBLISH in dialog.")
-            else:
-                page.get_by_text("PUBLISH", exact=True).last.click(force=True)
-                print("Clicked PUBLISH.last (legacy fallback).")
-
-    time.sleep(5)
+                extra[0].click(force=True)
+                time.sleep(8)
 
     for label in ("Done", "Close"):
         btn = page.get_by_role("button", name=label)
-        for i in range(btn.count()):
+        for idx in range(btn.count()):
             try:
-                if btn.nth(i).is_visible():
-                    btn.nth(i).click()
-                    print(f"Clicked {label}.")
+                if btn.nth(idx).is_visible():
+                    btn.nth(idx).click()
                     break
             except Exception:
                 continue
 
-    time.sleep(6)
+    page.screenshot(path="04_after_publish_click.png")
+
     if post_still_draft(page):
-        print(
-            "WARNING: UI still shows Draft — open Squarespace and click "
-            "PUBLISH → Publish Now once manually if needed."
-        )
-        page.screenshot(path=f"maybe_draft_{screenshot_suffix}.png")
-    else:
-        print("Post status: no longer Draft in editor.")
+        print("WARNING: UI may still show Draft — check 04_after_publish_click.png in artifacts.")
+
+
+def publish_post(page, img_path=None, screenshot_suffix=""):
+    """Wrapper for the bulletproof publish confirmation flow."""
+    run_publish_confirmation_flow(page, img_path=img_path)
 
 
 def try_publish_menu_post_settings(page, img_path=None, excerpt=None):
@@ -940,11 +957,10 @@ def run_automation():
 
                     page.screenshot(path=f"before_publish_{offset}.png")
 
-                    publish_post(page, img_path=img_path, screenshot_suffix=str(offset))
-                    page.screenshot(path=f"after_publish_{offset}.png")
+                    run_publish_confirmation_flow(page, img_path=img_path)
 
                     update_sheet_status(service, tab, offset, "Posted")
-                    print(f"Success (published live): {title}")
+                    print(f"Success: Post '{title}' processing loop finished.")
                     if img_path and os.path.exists(img_path):
                         os.remove(img_path)
 
