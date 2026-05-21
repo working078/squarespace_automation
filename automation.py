@@ -11,31 +11,33 @@ from zoneinfo import ZoneInfo
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from playwright.sync_api import sync_playwright
-from playwright_stealth import Stealth
+from playwright_stealth import stealth_sync  # FIX #3: correct import
 
-# --- CONFIGURATION ---
-SPREADSHEET_ID = '18c9Ly0omriZ6hUUQQVPs4kRx7j_j46tavLtXHdG2jts'
-SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
-BASE_URL = "https://coconut-radish-an89.squarespace.com/config/pages/6a00f5fd27ce801ca25aa32e"
-BOOKING_LINK = "https://forms.clickup.com/90161562352/f/2kz0rgqg-676/WM5FMNFXZQWBKHRIBF"
-SCHEDULE_TIME = "07:00 AM"
+# ---------------------------------------------------------------------------
+# CONFIGURATION
+# ---------------------------------------------------------------------------
+SPREADSHEET_ID  = '18c9Ly0omriZ6hUUQQVPs4kRx7j_j46tavLtXHdG2jts'
+SCOPES          = ['https://www.googleapis.com/auth/spreadsheets']
+
+# FIX #1: Use the direct /edit composer URL — no page-ID fragility, no "Add Post" button hunt
+BASE_URL        = "https://coconut-radish-an89.squarespace.com"
+COMPOSER_URL    = f"{BASE_URL}/edit"          # opens a blank post canvas immediately
+
+BOOKING_LINK    = "https://forms.clickup.com/90161562352/f/2kz0rgqg-676/WM5FMNFXZQWBKHRIBF"
 AUTH_STATE_PATH = 'auth.json'
-# Blog is AU-based; GitHub Actions runs in UTC — compare dates in Melbourne time.
-LOCAL_TZ = ZoneInfo("Australia/Melbourne")
+LOCAL_TZ        = ZoneInfo("Australia/Melbourne")
 SHEETS_DATE_EPOCH = datetime(1899, 12, 30)
 
 DATE_FORMATS = (
-    "%d/%m/%y",
-    "%d/%m/%Y",
-    "%d-%m-%y",
-    "%d-%m-%Y",
-    "%Y-%m-%d",
-    "%Y/%m/%d",
-    "%m/%d/%y",
-    "%m/%d/%Y",
+    "%d/%m/%y", "%d/%m/%Y", "%d-%m-%y", "%d-%m-%Y",
+    "%Y-%m-%d", "%Y/%m/%d", "%m/%d/%y", "%m/%d/%Y",
 )
 COLUMN_LETTERS = ("A", "B", "C", "D")
 
+
+# ---------------------------------------------------------------------------
+# GOOGLE SHEETS HELPERS
+# ---------------------------------------------------------------------------
 
 def sheet_range(tab, cell_range):
     escaped = tab.replace("'", "''")
@@ -45,8 +47,13 @@ def sheet_range(tab, cell_range):
 def get_credentials():
     creds_json = os.getenv("GOOGLE_CREDENTIALS")
     if creds_json:
-        return service_account.Credentials.from_service_account_info(json.loads(creds_json), scopes=SCOPES)
-    return service_account.Credentials.from_service_account_file('credentials.json', scopes=SCOPES)
+        return service_account.Credentials.from_service_account_info(
+            json.loads(creds_json), scopes=SCOPES
+        )
+    return service_account.Credentials.from_service_account_file(
+        'credentials.json', scopes=SCOPES
+    )
+
 
 def pad_row(row, width=4):
     row = list(row)
@@ -65,13 +72,12 @@ def is_pending_status(value):
 
 
 def serial_to_date(serial):
-    days = float(serial)
-    whole_days = int(days)
-    return (SHEETS_DATE_EPOCH + timedelta(days=whole_days)).date()
+    days  = float(serial)
+    whole = int(days)
+    return (SHEETS_DATE_EPOCH + timedelta(days=whole)).date()
 
 
 def parse_sheet_date(value):
-    """Parse a sheet date cell (formatted string, serial number, or ISO)."""
     if value is None or value == "":
         return None
     if isinstance(value, (int, float)):
@@ -98,34 +104,6 @@ def list_sheet_tabs(service):
     return [s["properties"]["title"] for s in meta.get("sheets", [])]
 
 
-def column_has_pending(service, tab):
-    for cell in _fetch_column(service, tab, "D", "FORMATTED_VALUE"):
-        if is_pending_status(cell):
-            return True
-    return False
-
-
-def resolve_sheet_tab(service):
-    """Use SHEET_TAB env var, else the tab that contains Pending rows."""
-    override = os.getenv("SHEET_TAB", "").strip()
-    if override:
-        print(f"Using spreadsheet tab from SHEET_TAB: {override!r}")
-        return override
-
-    tabs = list_sheet_tabs(service)
-    if not tabs:
-        return "Sheet1"
-
-    for tab in tabs:
-        if column_has_pending(service, tab):
-            print(f"Using spreadsheet tab with Pending rows: {tab!r}")
-            return tab
-
-    tab = tabs[0]
-    print(f"No Pending rows found in any tab; defaulting to first tab: {tab!r}")
-    return tab
-
-
 def _fetch_column(service, tab, letter, value_render_option):
     result = service.spreadsheets().values().get(
         spreadsheetId=SPREADSHEET_ID,
@@ -136,17 +114,36 @@ def _fetch_column(service, tab, letter, value_render_option):
     return [row[0] if row else "" for row in values]
 
 
+def column_has_pending(service, tab):
+    for cell in _fetch_column(service, tab, "D", "FORMATTED_VALUE"):
+        if is_pending_status(cell):
+            return True
+    return False
+
+
+def resolve_sheet_tab(service):
+    override = os.getenv("SHEET_TAB", "").strip()
+    if override:
+        print(f"Using spreadsheet tab from SHEET_TAB: {override!r}")
+        return override
+    tabs = list_sheet_tabs(service)
+    if not tabs:
+        return "Sheet1"
+    for tab in tabs:
+        if column_has_pending(service, tab):
+            print(f"Using spreadsheet tab with Pending rows: {tab!r}")
+            return tab
+    tab = tabs[0]
+    print(f"No Pending rows found in any tab; defaulting to first tab: {tab!r}")
+    return tab
+
+
 def fetch_sheet_rows(service, tab):
-    """
-    Fetch A–D row-by-row with per-column requests so empty cells do not
-    shift Title/Content/Date/Status into the wrong indices.
-    """
     raw_cols = {
         letter: _fetch_column(service, tab, letter, "UNFORMATTED_VALUE")
         for letter in COLUMN_LETTERS
     }
     formatted_dates = _fetch_column(service, tab, "C", "FORMATTED_VALUE")
-
     row_count = max((len(col) for col in raw_cols.values()), default=0)
     rows = []
     for offset in range(row_count):
@@ -175,7 +172,6 @@ def dump_row_diagnostics(rows_with_meta):
 
 
 def select_pending_rows(rows_with_meta):
-    """Decide which rows to process; log skip reasons for debugging."""
     today = today_local()
     print(f"Today (Australia/Melbourne): {today.isoformat()}")
     pending = []
@@ -213,24 +209,20 @@ def update_sheet_status(service, tab, row_index, status):
     body = {'values': [[status]]}
     service.spreadsheets().values().update(
         spreadsheetId=SPREADSHEET_ID, range=range_name,
-        valueInputOption="USER_ENTERED", body=body).execute()
+        valueInputOption="USER_ENTERED", body=body
+    ).execute()
 
-def build_excerpt(content, max_len=220):
-    """Short teaser for the blog index (Metro Express–style card excerpt)."""
-    text = re.sub(r"\s+", " ", str(content).strip())
-    if len(text) <= max_len:
-        return text
-    cut = text[:max_len].rsplit(" ", 1)[0]
-    return cut.rstrip(".,;:") + "..."
 
+# ---------------------------------------------------------------------------
+# CONTENT FORMATTING
+# ---------------------------------------------------------------------------
 
 def format_blog_body(content, post_date):
-    """Article paragraphs plus a professional branded footer (Metro Express style)."""
-    raw = str(content).strip()
+    raw        = str(content).strip()
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", raw) if p.strip()]
     if not paragraphs:
         paragraphs = [raw] if raw else [""]
-    body = "\n\n".join(paragraphs)
+    body      = "\n\n".join(paragraphs)
     published = post_date.strftime("%d %B %Y")
     footer = (
         "\n\n"
@@ -245,595 +237,25 @@ def format_blog_body(content, post_date):
     return body + footer
 
 
-def get_editor_content_frame(page):
-    iframe = page.query_selector("iframe#sqs-site-frame")
-    if not iframe:
-        return None
-    return iframe.content_frame()
-
-
-def host_image_publicly(img_path):
-    """Upload JPEG to a temporary public URL (backup if Pollinations URL is unavailable)."""
-    try:
-        with open(img_path, "rb") as f:
-            response = requests.post(
-                "https://0x0.st",
-                files={"file": ("blog-hero.jpg", f, "image/jpeg")},
-                timeout=60,
-            )
-        if response.status_code == 200 and response.text.strip().startswith("http"):
-            url = response.text.strip()
-            print(f"Image hosted publicly at {url}")
-            return url
-    except Exception as exc:
-        print(f"Public image hosting failed: {exc}")
-    return None
-
-
-def embed_hero_image(page, image_url, img_path, title):
-    """
-    Insert hero image at the top of the post body inside the editor iframe.
-    Uses a public HTTPS URL (primary) or base64 (fallback) — works without (+) buttons.
-    """
-    inner = get_editor_content_frame(page)
-    if not inner:
-        raise RuntimeError("Could not access blog editor iframe")
-
-    if not image_url and img_path and os.path.exists(img_path):
-        image_url = host_image_publicly(img_path)
-
-    if image_url:
-        ok = inner.evaluate(
-            """([src, alt]) => {
-                const pickBody = () => {
-                    for (const ed of document.querySelectorAll('.tiptap.ProseMirror, .ProseMirror')) {
-                        if (ed.closest('h1, .entry-title')) continue;
-                        return ed;
-                    }
-                    return document.querySelector('.tiptap.ProseMirror');
-                };
-                const body = pickBody();
-                if (!body) return false;
-                body.innerHTML = body.innerHTML.replace(/^\\s*\\/\\s*/g, '').trim();
-                const fig = document.createElement('figure');
-                fig.className = 'sqs-image sqs-block-alignment-wrapper';
-                fig.contentEditable = 'false';
-                const img = document.createElement('img');
-                img.src = src;
-                img.alt = alt || '';
-                img.style.cssText = 'width:100%;max-width:100%;height:auto;display:block;margin:0 0 1.5rem;';
-                fig.appendChild(img);
-                if (body.firstChild) {
-                    body.insertBefore(fig, body.firstChild);
-                } else {
-                    body.appendChild(fig);
-                }
-                ['input', 'change', 'blur'].forEach((t) =>
-                    body.dispatchEvent(new Event(t, { bubbles: true }))
-                );
-                return !!body.querySelector('img[src]');
-            }""",
-            [image_url, title],
-        )
-        if ok:
-            print("Hero image embedded in post (public URL).")
-            time.sleep(4)
-            return True
-        print("URL embed returned false; trying base64 fallback...")
-
-    if img_path and os.path.exists(img_path):
-        with open(img_path, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode()
-        ok = inner.evaluate(
-            """([data, alt]) => {
-                const pickBody = () => {
-                    for (const ed of document.querySelectorAll('.tiptap.ProseMirror, .ProseMirror')) {
-                        if (ed.closest('h1, .entry-title')) continue;
-                        return ed;
-                    }
-                    return document.querySelector('.tiptap.ProseMirror');
-                };
-                const body = pickBody();
-                if (!body) return false;
-                const fig = document.createElement('figure');
-                fig.className = 'sqs-image sqs-block-alignment-wrapper';
-                const img = document.createElement('img');
-                img.src = 'data:image/jpeg;base64,' + data;
-                img.alt = alt || '';
-                img.style.cssText = 'width:100%;max-width:100%;height:auto;display:block;margin:0 0 1.5rem;';
-                fig.appendChild(img);
-                if (body.firstChild) {
-                    body.insertBefore(fig, body.firstChild);
-                } else {
-                    body.appendChild(fig);
-                }
-                ['input', 'change', 'blur'].forEach((t) =>
-                    body.dispatchEvent(new Event(t, { bubbles: true }))
-                );
-                return true;
-            }""",
-            [b64, title],
-        )
-        if ok:
-            print("Hero image embedded in post (base64).")
-            time.sleep(4)
-            return True
-
-    return False
-
-
-def add_post_image(page, frame, img_path, image_url, title):
-    """Add hero image — URL embed first, then (+) upload as last resort."""
-    if embed_hero_image(page, image_url, img_path, title):
-        return
-    if img_path and os.path.exists(img_path):
-        try:
-            _insert_via_block_plus(page, frame, img_path)
-            print("Image uploaded via block (+) menu.")
-            return
-        except Exception as exc:
-            page.screenshot(path="image_upload_failed.png")
-            raise RuntimeError(
-                "Could not add image to post (URL embed and block upload both failed). "
-                f"Last error: {exc}"
-            ) from exc
-    raise RuntimeError("No image file or URL available for this post.")
-
-
-def dismiss_site_settings_modal(page):
-    """Close the site-wide Settings panel if it was opened by mistake."""
-    if page.get_by_role("heading", name="Settings").count() > 0 and page.get_by_text("Website", exact=True).count() > 0:
-        print("Closing site Settings modal (not post settings)...")
-        close_btn = page.locator('button[aria-label="Close"]')
-        if close_btn.count() > 0:
-            close_btn.first.click()
-        else:
-            page.keyboard.press("Escape")
-        time.sleep(1)
-
+# ---------------------------------------------------------------------------
+# IMAGE GENERATION
+# ---------------------------------------------------------------------------
 
 def is_valid_jpeg(data):
     return isinstance(data, bytes) and len(data) > 10000 and data[:3] == b"\xff\xd8\xff"
 
 
-def set_files_on_any_input(page, frame, img_path):
-    """Attach a file to the first available upload input (iframe or parent page)."""
-    for root_name, root in (("editor", frame), ("page", page)):
-        inputs = root.locator('input[type="file"]')
-        count = inputs.count()
-        for i in range(count):
-            try:
-                inputs.nth(i).set_input_files(img_path, timeout=8000)
-                print(f"Attached image via {root_name} file input #{i}")
-                return True
-            except Exception:
-                continue
-    return False
-
-
-def _click_image_block_option(page, frame):
-    """Choose 'Image' from the Squarespace block picker (iframe or parent UI)."""
-    for root in (frame, page):
-        for sel in (
-            ".sqs-blockbutton",
-            ".sqs-blockselector button",
-            '[data-block-type="image"]',
-            '[data-collection-type-name="image"]',
-        ):
-            loc = root.locator(sel).filter(has_text=re.compile(r"^image$", re.I))
-            if loc.count() > 0:
-                loc.first.click(force=True, timeout=5000)
-                return True
-        for loc in (
-            root.get_by_role("button", name=re.compile(r"^image$", re.I)),
-            root.get_by_text("Image", exact=True),
-        ):
-            if loc.count() > 0:
-                try:
-                    if loc.first.is_visible():
-                        loc.first.click(force=True, timeout=5000)
-                        return True
-                except Exception:
-                    continue
-    return False
-
-
-def _upload_after_image_block_added(page, frame, img_path):
-    time.sleep(2)
-    if set_files_on_any_input(page, frame, img_path):
-        time.sleep(12)
-        return
-
-    upload_triggers = [
-        frame.get_by_text(re.compile(r"upload|computer|browse|device|add images", re.I)),
-        page.get_by_text(re.compile(r"upload|computer|browse|device|add images", re.I)),
-        frame.locator('[aria-label*="upload" i], [aria-label*="image" i]'),
-    ]
-    for trigger in upload_triggers:
-        if trigger.count() == 0:
-            continue
-        try:
-            with page.expect_file_chooser(timeout=15000) as fc_info:
-                trigger.first.click(force=True)
-            fc_info.value.set_files(img_path)
-            time.sleep(12)
-            print("Image attached via file chooser.")
-            return
-        except Exception:
-            continue
-
-    # Classic editor: second (+) inside empty image block
-    inner_plus = frame.locator(
-        '.sqs-block-image .sqs-blockinsertion-button, '
-        '.image-block .sqs-blockinsertion-button, '
-        'button[aria-label*="Add" i]'
-    )
-    if inner_plus.count() > 0:
-        inner_plus.first.click(force=True)
-        time.sleep(1)
-        if set_files_on_any_input(page, frame, img_path):
-            time.sleep(12)
-            return
-
-    raise RuntimeError("No file upload control found after adding Image block")
-
-
-PLUS_BUTTON_SELECTORS = (
-    ".sqs-blockinsertion-button",
-    "button.block-insertion-label",
-    ".sqs-layout-insertion-point button",
-    '[class*="BlockInsertion"] button',
-    '[class*="insertion-point"] button',
-)
-
-
-def _count_plus_buttons(page, frame):
-    total = 0
-    for root_name, root in (("page", page), ("iframe", frame)):
-        for sel in PLUS_BUTTON_SELECTORS:
-            n = root.locator(sel).count()
-            if n:
-                print(f"  {n} match for {sel!r} on {root_name}")
-                total += n
-    return total
-
-
-def _reveal_plus_buttons(page, frame):
-    """Hover between title and body — (+) controls often live on the parent page overlay."""
-    title = frame.locator("h1.entry-title").first
-    title.wait_for(state="visible", timeout=15000)
-    title.scroll_into_view_if_needed()
-    box = title.bounding_box()
-    if box:
-        for y_offset in (12, 24, 36, 52):
-            page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] + y_offset)
-            time.sleep(0.7)
-    text_block = frame.locator(".sqs-block-html, .sqs-block-content").first
-    if text_block.count() > 0:
-        text_block.hover()
-        time.sleep(1)
-
-
-def _all_plus_locators(page, frame):
-    locators = []
-    for root in (page, frame):
-        for sel in PLUS_BUTTON_SELECTORS:
-            loc = root.locator(sel)
-            if loc.count() > 0:
-                locators.append(loc)
-    return locators
-
-
-def _insert_via_block_plus(page, frame, img_path):
-    """
-    Classic blog editor: hover insert point → (+) → Image → upload.
-    (+) buttons are often on the parent page, not inside the iframe DOM.
-    """
-    print("Trying block insertion (+) between title and body...")
-    frame.locator(".sqs-block, .sqs-block-html, .tiptap.ProseMirror").first.wait_for(
-        state="attached", timeout=30000
-    )
-    time.sleep(2)
-    _reveal_plus_buttons(page, frame)
-    print(f"Insertion controls after hover: {_count_plus_buttons(page, frame)}")
-
-    last_err = "no (+) buttons worked"
-    for loc in _all_plus_locators(page, frame):
-        count = loc.count()
-        for i in range(count):
-            btn = loc.nth(i)
-            try:
-                btn.scroll_into_view_if_needed()
-                btn.click(force=True, timeout=8000)
-                print(f"Clicked (+) button index {i}")
-                time.sleep(1.5)
-                if not _click_image_block_option(page, frame):
-                    page.keyboard.press("Escape")
-                    last_err = f"(+) index {i}: Image not in block picker"
-                    continue
-                _upload_after_image_block_added(page, frame, img_path)
-                return
-            except Exception as exc:
-                last_err = f"(+) index {i}: {exc}"
-                page.keyboard.press("Escape")
-                time.sleep(0.5)
-    # Last resort: click (+) via JS inside the iframe document (headless-safe).
-    iframe_el = page.query_selector("iframe#sqs-site-frame")
-    if iframe_el:
-        inner = iframe_el.content_frame()
-        if inner:
-            js_count = inner.evaluate(
-                "() => document.querySelectorAll('.sqs-blockinsertion-button').length"
-            )
-            print(f"JS (+) buttons inside iframe document: {js_count}")
-            if js_count:
-                inner.evaluate(
-                    "() => { const b = document.querySelector('.sqs-blockinsertion-button'); if (b) b.click(); }"
-                )
-                time.sleep(1.5)
-                if _click_image_block_option(page, frame):
-                    _upload_after_image_block_added(page, frame, img_path)
-                    return
-
-    raise RuntimeError(last_err)
-
-
-def save_post_draft(page):
-    """Persist title/body/image in Squarespace before publishing."""
-    for locator in (
-        page.get_by_role("button", name=re.compile(r"^SAVE$", re.I)),
-        page.locator("button").filter(has_text=re.compile(r"^SAVE$", re.I)),
-    ):
-        for i in range(locator.count()):
-            btn = locator.nth(i)
-            try:
-                if btn.is_visible():
-                    btn.click(timeout=10000)
-                    print("Clicked SAVE — draft saved in Squarespace.")
-                    time.sleep(6)
-                    return True
-            except Exception:
-                continue
-    print("SAVE button not found — continuing without explicit save.")
-    return False
-
-
-def post_still_draft(page):
-    """Top bar shows 'Post · Draft' when not live."""
-    for pattern in (
-        re.compile(r"Post\s*·\s*Draft", re.I),
-        re.compile(r"^\s*Draft\s*$", re.I),
-    ):
-        loc = page.get_by_text(pattern)
-        for i in range(loc.count()):
-            try:
-                if loc.nth(i).is_visible():
-                    return True
-            except Exception:
-                continue
-    return False
-
-
-def _visible_publish_buttons(page):
-    """All visible toolbar/dialog PUBLISH buttons (not hidden nav text)."""
-    indices = []
-    for locator in (
-        page.get_by_role("button", name=re.compile(r"^PUBLISH$", re.I)),
-        page.locator("button").filter(has_text=re.compile(r"^PUBLISH$", re.I)),
-    ):
-        for i in range(locator.count()):
-            try:
-                if locator.nth(i).is_visible():
-                    indices.append(locator.nth(i))
-            except Exception:
-                continue
-    return indices
-
-
-def _try_publish_now_soft(page):
-    """Click Publish Now if present — optional, never raises."""
-    for loc in (
-        page.get_by_role("button", name=re.compile(r"Publish\s*Now", re.I)),
-        page.locator('button:has-text("Publish Now")'),
-        page.locator('button:has-text("PUBLISH NOW")'),
-        page.locator('[data-test="publish-now-button"]'),
-    ):
-        try:
-            btn = loc.first
-            btn.wait_for(state="visible", timeout=4000)
-            btn.click(timeout=8000)
-            print("Clicked 'Publish Now'.")
-            return True
-        except Exception:
-            continue
-    return False
-
-
-def upload_featured_image_in_publish_dialog(page, img_path):
-    """Upload thumbnail/featured image in the publish dialog (Squarespace CDN)."""
-    if not img_path or not os.path.exists(img_path):
-        return False
-    time.sleep(2)
-    if set_files_on_any_input(page, page, img_path):
-        print("Featured image uploaded in publish dialog.")
-        time.sleep(8)
-        return True
-    for trigger in (
-        page.get_by_text(re.compile(r"upload|add image|replace|computer", re.I)),
-        page.locator('[aria-label*="image" i], [aria-label*="upload" i]'),
-    ):
-        if trigger.count() == 0:
-            continue
-        try:
-            with page.expect_file_chooser(timeout=12000) as fc_info:
-                trigger.first.click(force=True)
-            fc_info.value.set_files(img_path)
-            print("Featured image uploaded via file chooser in publish dialog.")
-            time.sleep(8)
-            return True
-        except Exception:
-            continue
-    print("No upload control in publish dialog — in-article image may be used only.")
-    return False
-
-
-def upload_featured_image_via_settings(page, img_path):
-    """Upload featured image via post settings panel — no SAVE/draft step."""
-    print("Uploading featured image...")
-    dismiss_site_settings_modal(page)
-    page.keyboard.press("Escape")
-    time.sleep(0.5)
-
-    settings_btn = page.get_by_role("button", name="Settings").or_(
-        page.locator('[data-testid="settings-icon"]')
-    )
-    settings_btn.first.click(force=True)
-    time.sleep(3)
-
-    page.locator('input[type="file"]').first.wait_for(state="attached", timeout=20000)
-    page.locator('input[type="file"]').first.set_input_files(img_path)
-    time.sleep(10)
-
-    done_close = page.get_by_role("button", name="Done").or_(
-        page.get_by_role("button", name="Close")
-    )
-    done_close.first.click(force=True)
-    time.sleep(2)
-
-
-def run_publish_confirmation_flow(page):
-    """
-    Direct publish only — no SAVE/draft before this flow.
-    """
-    dismiss_site_settings_modal(page)
-    page.keyboard.press("Escape")
-    time.sleep(0.5)
-
-    # 6. PUBLISHING & CONFIRMATION FLOW
-    print("Initiating direct publish flow...")
-
-    publish_dropdown = page.locator('button[data-test="publish-button-dropdown"]').or_(
-        page.get_by_role("button", name=re.compile(r"Publish", re.I))
-    )
-    publish_dropdown.wait_for(state="visible", timeout=15000)
-    publish_dropdown.click()
-    print("Clicked the main publish dropdown menu.")
-    time.sleep(3)
-
-    publish_option = page.get_by_text("Publish").or_(
-        page.get_by_role("button", name=re.compile(r"Publish Immediately", re.I))
-    )
-    if publish_option.first.is_visible():
-        publish_option.first.click()
-        print("Clicked 'Publish' inside the dropdown option.")
-    time.sleep(3)
-
-    print("Checking for final confirmation modal...")
-    final_publish_btn = (
-        page.locator('button:has-text("PUBLISH")')
-        .or_(page.locator('button:has-text("Publish Now")'))
-        .last
-    )
-
-    if final_publish_btn.is_visible():
-        print("Clicking final confirmation button to go live.")
-        final_publish_btn.click()
-        time.sleep(10)
-    else:
-        print("No secondary modal appeared. Taking verification screenshot.")
-
-    page.screenshot(path="04_after_publish_click.png")
-
-
-def try_publish_menu_post_settings(page, img_path=None, excerpt=None):
-    """
-    Optional fallback: PUBLISH dropdown → post settings (thumbnail field).
-    Never uses data-testid=settings-icon (that opens site Settings).
-    """
-    dismiss_site_settings_modal(page)
-    opened_menu = False
-    for dropdown in (
-        page.locator('button[data-test="publish-button-dropdown"]'),
-        page.locator('button[aria-label*="Publish" i] + button'),
-        page.locator('button:has-text("PUBLISH") ~ button').first,
-    ):
-        if dropdown.count() > 0:
-            dropdown.first.click(force=True)
-            opened_menu = True
-            break
-    if not opened_menu:
-        publish_btn = page.get_by_role("button", name=re.compile(r"^publish$", re.I))
-        if publish_btn.count() > 0:
-            publish_btn.first.click(force=True)
-            opened_menu = True
-    if not opened_menu:
-        return False
-    time.sleep(1)
-    opened = False
-    # Never click plain "Settings" — that matches the hidden site nav and hangs.
-    for label in ("Post Settings", "SEO", "Social", "Options"):
-        item = page.get_by_role("menuitem", name=re.compile(label, re.I))
-        if item.count() == 0:
-            item = page.get_by_text(label, exact=True)
-        for idx in range(item.count()):
-            candidate = item.nth(idx)
-            try:
-                if candidate.is_visible():
-                    candidate.click(force=True, timeout=5000)
-                    opened = True
-                    break
-            except Exception:
-                continue
-        if opened:
-            break
-    if not opened:
-        page.keyboard.press("Escape")
-        return False
-
-    time.sleep(2)
-    if img_path and os.path.exists(img_path):
-        if not set_files_on_any_input(page, page, img_path):
-            for click_target in (
-                page.get_by_text(re.compile(r"add|upload|replace", re.I)),
-                page.locator('[aria-label*="image" i]'),
-            ):
-                if click_target.count() > 0:
-                    click_target.first.click()
-                    time.sleep(1)
-                    if set_files_on_any_input(page, page, img_path):
-                        break
-        time.sleep(10)
-
-    if excerpt:
-        field = page.get_by_label("Excerpt", exact=False)
-        if field.count() == 0:
-            field = page.locator('textarea[placeholder*="Excerpt" i]')
-        if field.count() > 0:
-            field.first.fill(excerpt)
-
-    for label in ("Done", "Close", "Save"):
-        btn = page.get_by_role("button", name=label)
-        if btn.count() > 0:
-            btn.first.click()
-            time.sleep(1)
-            return True
-    page.keyboard.press("Escape")
-    return True
-
-
 def generate_image(prompt, filename="blog_image.jpg"):
     print(f"Generating image for: {prompt[:50]}...")
-    seed = random.randint(1, 1000000)
-    full_prompt = f"Professional transport logistics photography, Australian trucking, {prompt}"
-    encoded_prompt = urllib.parse.quote(full_prompt)
-    params = f"width=1024&height=1024&seed={seed}&model=flux"
-    api_key = os.getenv("POLLINATIONS_API_KEY", "").strip()
-    urls = [f"https://image.pollinations.ai/prompt/{encoded_prompt}?{params}"]
+    seed         = random.randint(1, 1000000)
+    full_prompt  = f"Professional transport logistics photography, Australian trucking, {prompt}"
+    encoded      = urllib.parse.quote(full_prompt)
+    params       = f"width=1024&height=1024&seed={seed}&model=flux"
+    api_key      = os.getenv("POLLINATIONS_API_KEY", "").strip()
+    urls         = [f"https://image.pollinations.ai/prompt/{encoded}?{params}"]
     if api_key:
-        urls.insert(0, f"https://gen.pollinations.ai/image/{encoded_prompt}?{params}")
-    headers = {}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+        urls.insert(0, f"https://gen.pollinations.ai/image/{encoded}?{params}")
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
     for url in urls:
         try:
@@ -841,123 +263,343 @@ def generate_image(prompt, filename="blog_image.jpg"):
             if response.status_code == 200 and is_valid_jpeg(response.content):
                 with open(filename, "wb") as f:
                     f.write(response.content)
-                print(f"Image saved ({len(response.content) // 1024} KB) from {url.split('/')[2]}")
+                print(f"Image saved ({len(response.content) // 1024} KB)")
                 return os.path.abspath(filename), url
-            preview = response.content[:40]
-            print(f"Bad image from {url.split('/')[2]}: status={response.status_code}, bytes={len(response.content)}, head={preview!r}")
+            print(
+                f"Bad image from {url.split('/')[2]}: "
+                f"status={response.status_code}, bytes={len(response.content)}"
+            )
         except Exception as e:
             print(f"Request failed for {url.split('/')[2]}: {e}")
     return None, None
 
-def run_automation():
-    creds = get_credentials()
-    service = build('sheets', 'v4', credentials=creds)
-    tab = resolve_sheet_tab(service)
-    rows_with_meta = fetch_sheet_rows(service, tab)
-    work_items = select_pending_rows(rows_with_meta)
-    if not work_items:
-        dump_row_diagnostics(rows_with_meta)
-        print("No pending posts found for today or earlier.")
+
+# ---------------------------------------------------------------------------
+# BROWSER / SQUARESPACE HELPERS
+# ---------------------------------------------------------------------------
+
+def get_editor_content_frame(page):
+    iframe = page.query_selector("iframe#sqs-site-frame")
+    if not iframe:
+        return None
+    return iframe.content_frame()
+
+
+def wait_for_editor_iframe(page, timeout=60000):
+    """Wait for the editor iframe to appear and return a frame_locator."""
+    page.wait_for_selector("iframe#sqs-site-frame", state="visible", timeout=timeout)
+    return page.frame_locator("iframe#sqs-site-frame")
+
+
+def dismiss_modal_if_open(page):
+    """Dismiss any accidental site-wide Settings/modal that blocks the UI."""
+    try:
+        if (
+            page.get_by_role("heading", name="Settings").count() > 0
+            and page.get_by_text("Website", exact=True).count() > 0
+        ):
+            print("Dismissing unexpected site Settings modal...")
+            close_btn = page.locator('button[aria-label="Close"]')
+            if close_btn.count() > 0:
+                close_btn.first.click()
+            else:
+                page.keyboard.press("Escape")
+            time.sleep(1)
+    except Exception:
+        pass
+
+
+def fill_title(frame, title):
+    """Type the post title into the ProseMirror h1 field inside the iframe."""
+    title_loc = frame.locator("h1.entry-title .ProseMirror, h1[data-content-field='title'] .ProseMirror")
+    title_loc.first.wait_for(state="visible", timeout=30000)
+    title_loc.first.click()
+    title_loc.first.fill(title)
+    print(f"Title filled: {title[:60]}")
+    time.sleep(1)
+
+
+def fill_body(frame, body_text):
+    """Type post body into the last ProseMirror editor (not the title one)."""
+    body_loc = frame.locator(".tiptap.ProseMirror").last
+    body_loc.wait_for(state="visible", timeout=20000)
+    body_loc.click()
+    body_loc.fill(body_text)
+    print("Body filled.")
+    time.sleep(1)
+
+
+# FIX #4: Target POST settings specifically, never the site-wide Settings panel
+def upload_featured_image_via_post_settings(page, img_path):
+    """
+    Open the POST settings panel (not the site Settings) and upload the
+    featured/thumbnail image.  Uses precise selectors to avoid the wrong button.
+    """
+    if not img_path or not os.path.exists(img_path):
+        print("No image file — skipping featured image upload.")
+        return False
+
+    print("Opening Post Settings panel for featured image upload...")
+    dismiss_modal_if_open(page)
+    page.keyboard.press("Escape")
+    time.sleep(0.5)
+
+    # FIX #4: Only click the POST-level settings, never the global "Settings" nav item
+    post_settings_btn = (
+        page.locator('[data-test="post-settings-button"]')
+        .or_(page.locator('button[aria-label="Post Settings"]'))
+        .or_(page.locator('button[aria-label="Options"]'))           # some SQS versions
+        .or_(page.locator('[data-testid="post-settings-button"]'))
+    )
+
+    if post_settings_btn.count() == 0:
+        print("Post Settings button not found — skipping featured image.")
+        return False
+
+    post_settings_btn.first.click(force=True)
+    time.sleep(3)
+
+    # Wait for the file input to appear in the settings panel
+    file_input = page.locator('input[type="file"]').first
+    try:
+        file_input.wait_for(state="attached", timeout=15000)
+        file_input.set_input_files(img_path)
+        # FIX #5: Wait for upload to finish instead of blind sleep
+        page.wait_for_function(
+            "() => !document.querySelector('.sqs-upload-progress, [data-uploading=\"true\"]')",
+            timeout=30000,
+        )
+        print("Featured image uploaded via Post Settings.")
+    except Exception as e:
+        print(f"Featured image upload failed: {e}")
+        page.screenshot(path="featured_image_error.png")
+        page.keyboard.press("Escape")
+        return False
+
+    # Close the panel
+    for label in ("Done", "Close", "Save"):
+        btn = page.get_by_role("button", name=label)
+        if btn.count() > 0:
+            try:
+                btn.first.click(force=True)
+                break
+            except Exception:
+                continue
+    time.sleep(2)
+    return True
+
+
+def run_publish_confirmation_flow(page):
+    """
+    Direct publish flow — no Save Draft step.
+    Clicks the main Publish button/dropdown, then confirms if a modal appears.
+    """
+    dismiss_modal_if_open(page)
+    page.keyboard.press("Escape")
+    time.sleep(0.5)
+
+    print("Initiating direct publish flow...")
+
+    # Primary: dropdown arrow next to Publish
+    publish_dropdown = (
+        page.locator('button[data-test="publish-button-dropdown"]')
+        .or_(page.locator('button[data-test="publish-button"]'))
+        .or_(page.get_by_role("button", name=re.compile(r"^Publish$", re.I)))
+    )
+
+    try:
+        publish_dropdown.first.wait_for(state="visible", timeout=15000)
+        publish_dropdown.first.click()
+        print("Clicked main Publish button/dropdown.")
+    except Exception as e:
+        print(f"Publish button not found: {e}")
+        page.screenshot(path="publish_button_missing.png")
         return
 
-    EMAIL = os.getenv("SQ_EMAIL")
+    time.sleep(3)
+
+    # If a dropdown menu appeared, click the "Publish" / "Publish Now" option inside it
+    for option_text in ("Publish Now", "Publish Immediately", "Publish"):
+        option = page.get_by_role("menuitem", name=re.compile(option_text, re.I))
+        if option.count() == 0:
+            option = page.get_by_text(option_text, exact=True)
+        for i in range(option.count()):
+            try:
+                if option.nth(i).is_visible():
+                    option.nth(i).click()
+                    print(f"Clicked dropdown option: '{option_text}'")
+                    time.sleep(3)
+                    break
+            except Exception:
+                continue
+
+    # Final confirmation modal (if any)
+    for selector in (
+        'button:has-text("PUBLISH")',
+        'button:has-text("Publish Now")',
+        'button:has-text("Go Live")',
+    ):
+        btn = page.locator(selector).last
+        try:
+            if btn.is_visible():
+                btn.click()
+                print(f"Clicked final confirmation: {selector}")
+                # FIX #5: Wait for the post-publish URL change instead of blind sleep
+                page.wait_for_url(re.compile(r"(posts|blog|config)"), timeout=20000)
+                break
+        except Exception:
+            continue
+
+    time.sleep(3)
+    page.screenshot(path="04_after_publish_click.png")
+    print("Publish flow complete — screenshot saved.")
+
+
+# ---------------------------------------------------------------------------
+# LOGIN / SESSION
+# ---------------------------------------------------------------------------
+
+def do_fresh_login(page, context, email, password):
+    print("Performing fresh Squarespace login...")
+    page.goto("https://account.squarespace.com/login", wait_until="domcontentloaded")
+    page.get_by_label("Email address").fill(email)
+    page.get_by_placeholder("Password", exact=True).fill(password)
+    page.get_by_role("button", name="Log In").click()
+    page.wait_for_url(re.compile(r"account\.squarespace\.com/config"), timeout=60000)
+    context.storage_state(path=AUTH_STATE_PATH)
+    print("Login successful — session saved to auth.json.")
+
+
+# ---------------------------------------------------------------------------
+# MAIN ORCHESTRATION
+# ---------------------------------------------------------------------------
+
+def run_automation():
+    # --- Google Sheets setup ---
+    creds   = get_credentials()
+    service = build('sheets', 'v4', credentials=creds)
+    tab     = resolve_sheet_tab(service)
+
+    rows_with_meta = fetch_sheet_rows(service, tab)
+    work_items     = select_pending_rows(rows_with_meta)
+
+    if not work_items:
+        dump_row_diagnostics(rows_with_meta)
+        print("No pending posts found for today or earlier. Exiting.")
+        return
+
+    EMAIL    = os.getenv("SQ_EMAIL")
     PASSWORD = os.getenv("SQ_PASSWORD")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
+
         context_args = {
-            "viewport": {"width": 1400, "height": 900},
-            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            "viewport":   {"width": 1400, "height": 900},
+            "user_agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            ),
         }
-        
+
+        # --- Session / auth ---
         if os.path.exists(AUTH_STATE_PATH):
-            print("Session found. Loading storage state...")
+            print("Session file found — loading storage state...")
             context = browser.new_context(storage_state=AUTH_STATE_PATH, **context_args)
         else:
-            print("No session found. Preparing fresh login...")
+            print("No session file — will log in fresh.")
             context = browser.new_context(**context_args)
 
         page = context.new_page()
-        Stealth().apply_stealth_sync(page)
+
+        # FIX #3: Correct stealth call
+        stealth_sync(page)
 
         try:
-            # 1. AUTHENTICATION & ERROR CHECK
-            print("Navigating to Squarespace...")
+            # --- Verify / refresh session ---
+            print("Verifying session...")
             page.goto("https://account.squarespace.com/config/", wait_until="domcontentloaded")
-            time.sleep(10)
-            
-            # Detect login page or error popup
-            if "login" in page.url or page.locator('input[name="email"]').is_visible() or page.locator('text=Couldn\'t load items').is_visible():
-                print("Session expired or invalid. Performing fresh login...")
-                page.goto("https://account.squarespace.com/login")
-                page.get_by_label("Email address").fill(EMAIL)
-                page.get_by_placeholder("Password", exact=True).fill(PASSWORD)
-                page.get_by_role("button", name="Log In").click()
-                page.wait_for_url("**/config**", timeout=60000)
-                context.storage_state(path=AUTH_STATE_PATH)
-                print("Login successful.")
+            time.sleep(5)
 
-            # 2. PROCESS QUEUED ROWS
+            session_invalid = (
+                "login" in page.url
+                or page.locator('input[name="email"]').is_visible()
+            )
+            if session_invalid:
+                do_fresh_login(page, context, EMAIL, PASSWORD)
+
+            page.screenshot(path="01_initial_landing.png")
+            print("Session verified — screenshot saved.")
+
+            # --- Process each queued row ---
             for offset, row, post_date in work_items:
-                try:
-                    title, content = row[0], row[1]
-                    sheet_row = offset + 2
-                    print(f"Processing row {sheet_row}: {title} ({post_date.isoformat()})")
-                    update_sheet_status(service, tab, offset, "Processing")
+                sheet_row = offset + 2
+                title     = str(row[0]).strip()
+                content   = str(row[1]).strip()
 
+                print(f"\n{'='*60}")
+                print(f"Processing row {sheet_row}: {title} ({post_date.isoformat()})")
+                print(f"{'='*60}")
+
+                # Mark as Processing immediately (prevents double-posting on re-run)
+                update_sheet_status(service, tab, offset, "Processing")
+
+                img_path  = None
+                image_url = None
+
+                try:
+                    # --- Generate image ---
                     img_path, image_url = generate_image(title)
 
-                    print(f"Navigating to blog list...")
-                    page.goto(BASE_URL, wait_until="load", timeout=60000)
+                    # FIX #1: Navigate directly to the composer — no page-ID, no "Add Post" click
+                    print(f"Navigating to direct composer URL: {COMPOSER_URL}")
+                    page.goto(COMPOSER_URL, wait_until="domcontentloaded", timeout=60000)
 
-                    # Click Add Post (+) in sidebar
-                    print("Opening new post editor...")
-                    add_button = page.locator('button[aria-label="Add blog post"]').first
-                    add_button.wait_for(state="visible", timeout=45000)
-                    add_button.click()
+                    # FIX #5: Wait for the iframe properly instead of time.sleep(20)
+                    print("Waiting for editor iframe...")
+                    frame = wait_for_editor_iframe(page, timeout=60000)
 
-                    # Wait for the editor to initialize
-                    time.sleep(20)
+                    page.screenshot(path="02_editor_loaded.png")
+                    print("Editor loaded — screenshot saved.")
 
-                    # --- IFRAME HANDLING ---
-                    print("Accessing editor iframe...")
-                    page.wait_for_selector("iframe#sqs-site-frame", timeout=60000)
-                    frame = page.frame_locator("iframe#sqs-site-frame")
+                    # --- Fill title ---
+                    fill_title(frame, title)
 
-                    # Wait for Title inside frame
-                    frame.locator("h1.entry-title .ProseMirror").first.wait_for(
-                        state="visible", timeout=30000
-                    )
-                    frame.locator('h1.entry-title .ProseMirror').fill(title)
-                    time.sleep(1)
-
+                    # --- Fill body ---
                     body_text = format_blog_body(content, post_date)
-                    frame.locator('.tiptap.ProseMirror').last.fill(body_text)
-                    time.sleep(1)
+                    fill_body(frame, body_text)
 
-                    # 5. FEATURED IMAGE UPLOAD (no SAVE — go straight to publish)
+                    # --- Featured image (FIX #4: post settings, not site settings) ---
                     if img_path and os.path.exists(img_path):
-                        upload_featured_image_via_settings(page, img_path)
+                        upload_featured_image_via_post_settings(page, img_path)
 
-                    # --- NO EXPLICIT SAVE DRAFT — direct publish sequence ---
+                    # --- Publish directly (no Save Draft) ---
                     run_publish_confirmation_flow(page)
 
+                    # --- Mark success ---
                     update_sheet_status(service, tab, offset, "Posted")
-                    print(f"Success: Post '{title}' published live.")
+                    print(f"✅  Row {sheet_row} — post '{title}' published successfully.")
+
+                except Exception as row_error:
+                    # FIX #7 & #8: Screenshot + mark as Failed so it is retryable
+                    print(f"❌  Error on row {sheet_row}: {row_error}")
+                    page.screenshot(path=f"error_row_{sheet_row}.png")
+                    update_sheet_status(service, tab, offset, "Failed")
+
+                finally:
+                    # Always clean up temp image
                     if img_path and os.path.exists(img_path):
                         os.remove(img_path)
-
-                    # Short break before next post
                     time.sleep(5)
-                except Exception as row_error:
-                    print(f"Error on row {offset + 2}: {row_error}")
-                    continue
 
-        except Exception as e:
-            print(f"Fatal Error: {e}")
+        except Exception as fatal:
+            print(f"Fatal error: {fatal}")
             page.screenshot(path="fatal_error.png")
+
         finally:
             browser.close()
+
 
 if __name__ == "__main__":
     run_automation()
