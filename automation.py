@@ -268,51 +268,153 @@ def set_files_on_any_input(page, frame, img_path):
     return False
 
 
-def insert_image_in_editor(page, frame, img_path):
-    """
-    Add an image block at the top of the post body (inside the editor iframe).
-    Squarespace blog templates use this as the card/hero image on /blog/.
-    """
-    print(f"Inserting image in post editor: {img_path}")
-    editor = frame.locator(".tiptap.ProseMirror").first
-    editor.click()
-    time.sleep(1)
-    editor.press("Home")
-    time.sleep(0.5)
-    editor.press("/")
-    time.sleep(1.5)
+def _click_image_block_option(page, frame):
+    """Choose 'Image' from the block picker (iframe or parent UI)."""
+    for root in (frame, page):
+        for locator in (
+            root.get_by_role("button", name=re.compile(r"^image$", re.I)),
+            root.get_by_text(re.compile(r"^image$", re.I)),
+            root.locator('[data-block-type="image"]'),
+            root.locator('[data-collection-type-name="image"]'),
+            root.locator('[class*="ImageBlock"]'),
+        ):
+            if locator.count() > 0:
+                locator.first.click(force=True)
+                return True
+    return False
 
-    for selector in (
-        frame.get_by_role("option", name="Image"),
-        frame.get_by_text("Image", exact=True),
-        frame.locator('[data-item-name="image"]'),
-    ):
-        if selector.count() > 0:
-            selector.first.click()
-            break
-    else:
-        raise RuntimeError("Image block not found in editor slash menu")
 
+def _upload_after_image_block_added(page, frame, img_path):
     time.sleep(2)
     if set_files_on_any_input(page, frame, img_path):
         time.sleep(12)
         return
 
     upload_triggers = [
-        frame.get_by_text(re.compile(r"upload|computer|browse|device", re.I)),
-        page.get_by_text(re.compile(r"upload|computer|browse|device", re.I)),
+        frame.get_by_text(re.compile(r"upload|computer|browse|device|add images", re.I)),
+        page.get_by_text(re.compile(r"upload|computer|browse|device|add images", re.I)),
+        frame.locator('[aria-label*="upload" i], [aria-label*="image" i]'),
     ]
     for trigger in upload_triggers:
         if trigger.count() == 0:
             continue
-        with page.expect_file_chooser(timeout=15000) as fc_info:
-            trigger.first.click(force=True)
-        fc_info.value.set_files(img_path)
-        time.sleep(12)
-        print("Image attached via file chooser.")
-        return
+        try:
+            with page.expect_file_chooser(timeout=15000) as fc_info:
+                trigger.first.click(force=True)
+            fc_info.value.set_files(img_path)
+            time.sleep(12)
+            print("Image attached via file chooser.")
+            return
+        except Exception:
+            continue
+
+    # Classic editor: second (+) inside empty image block
+    inner_plus = frame.locator(
+        '.sqs-block-image .sqs-blockinsertion-button, '
+        '.image-block .sqs-blockinsertion-button, '
+        'button[aria-label*="Add" i]'
+    )
+    if inner_plus.count() > 0:
+        inner_plus.first.click(force=True)
+        time.sleep(1)
+        if set_files_on_any_input(page, frame, img_path):
+            time.sleep(12)
+            return
 
     raise RuntimeError("No file upload control found after adding Image block")
+
+
+def _insert_via_block_plus(page, frame, img_path):
+    """
+    Squarespace Classic blog editor: hover between blocks → (+) → Image.
+    See https://www.aboundwebdesign.com/blog-base/adding-images-to-blog-posts
+    """
+    print("Trying block insertion (+) between title and body...")
+    title = frame.locator("h1.entry-title").first
+    title.wait_for(state="visible", timeout=15000)
+    title.scroll_into_view_if_needed()
+    box = title.bounding_box()
+    if not box:
+        raise RuntimeError("Could not locate title block for insertion point")
+
+    # Hover in the gap below the title to reveal the (+) insert control
+    insert_y = box["y"] + box["height"] + 24
+    insert_x = box["x"] + box["width"] / 2
+    page.mouse.move(insert_x, insert_y)
+    time.sleep(2)
+
+    plus = frame.locator(
+        ".sqs-blockinsertion-button, "
+        "button.block-insertion-label, "
+        '[class*="BlockInsertion"] button, '
+        'button[aria-label*="Insert" i]'
+    )
+    if plus.count() == 0:
+        plus = page.locator(
+            '.js-section-toolbar button[aria-label*="Add" i], '
+            '[data-test*="add-block"]'
+        )
+
+    if plus.count() == 0:
+        # New line under title often exposes the insert point
+        title.click()
+        page.keyboard.press("Enter")
+        time.sleep(1.5)
+        page.mouse.move(insert_x, insert_y + 30)
+        time.sleep(2)
+        plus = frame.locator(".sqs-blockinsertion-button, button.block-insertion-label")
+
+    if plus.count() == 0:
+        raise RuntimeError("Block insertion (+) button not found — hover between blocks failed")
+
+    plus.first.click(force=True)
+    time.sleep(1.5)
+    if not _click_image_block_option(page, frame):
+        raise RuntimeError("Image option not found in block picker")
+    _upload_after_image_block_added(page, frame, img_path)
+
+
+def _insert_via_edit_section(page, frame, img_path):
+    """Click EDIT SECTION on the post section, then upload if a file input appears."""
+    print("Trying EDIT SECTION upload...")
+    for locator in (
+        frame.get_by_role("button", name=re.compile(r"edit section", re.I)),
+        frame.get_by_text(re.compile(r"edit section", re.I)),
+        page.get_by_role("button", name=re.compile(r"edit section", re.I)),
+    ):
+        if locator.count() > 0:
+            locator.first.click(force=True)
+            time.sleep(2)
+            break
+
+    if set_files_on_any_input(page, frame, img_path):
+        time.sleep(12)
+        page.keyboard.press("Escape")
+        return
+    raise RuntimeError("EDIT SECTION did not expose a file upload input")
+
+
+def insert_image_in_editor(page, frame, img_path):
+    """
+    Add an image block at the top of the post (Classic Squarespace blog editor).
+    """
+    print(f"Inserting image in post editor: {img_path}")
+    errors = []
+    for name, action in (
+        ("block plus menu", lambda: _insert_via_block_plus(page, frame, img_path)),
+        ("edit section", lambda: _insert_via_edit_section(page, frame, img_path)),
+    ):
+        try:
+            action()
+            print(f"Image upload succeeded via {name}.")
+            return
+        except Exception as exc:
+            errors.append(f"{name}: {exc}")
+            page.keyboard.press("Escape")
+            time.sleep(1)
+
+    page.screenshot(path="editor_insert_failed.png")
+    raise RuntimeError("; ".join(errors))
 
 
 def try_publish_menu_post_settings(page, img_path=None, excerpt=None):
@@ -321,11 +423,23 @@ def try_publish_menu_post_settings(page, img_path=None, excerpt=None):
     Never uses data-testid=settings-icon (that opens site Settings).
     """
     dismiss_site_settings_modal(page)
-    dropdown = page.locator('button[data-test="publish-button-dropdown"]')
-    if dropdown.count() == 0:
+    opened_menu = False
+    for dropdown in (
+        page.locator('button[data-test="publish-button-dropdown"]'),
+        page.locator('button[aria-label*="Publish" i] + button'),
+        page.locator('button:has-text("PUBLISH") ~ button').first,
+    ):
+        if dropdown.count() > 0:
+            dropdown.first.click(force=True)
+            opened_menu = True
+            break
+    if not opened_menu:
+        publish_btn = page.get_by_role("button", name=re.compile(r"^publish$", re.I))
+        if publish_btn.count() > 0:
+            publish_btn.first.click(force=True)
+            opened_menu = True
+    if not opened_menu:
         return False
-
-    dropdown.first.click()
     time.sleep(1)
     opened = False
     for label in ("Post Settings", "Settings", "SEO", "Options"):
@@ -406,12 +520,11 @@ def generate_image(prompt, filename="blog_image.jpg"):
     full_prompt = f"Professional transport logistics photography, Australian trucking, {prompt}"
     encoded_prompt = urllib.parse.quote(full_prompt)
     params = f"width=1024&height=1024&seed={seed}&model=flux"
-    urls = [
-        f"https://gen.pollinations.ai/image/{encoded_prompt}?{params}",
-        f"https://image.pollinations.ai/prompt/{encoded_prompt}?{params}",
-    ]
-    headers = {}
     api_key = os.getenv("POLLINATIONS_API_KEY", "").strip()
+    urls = [f"https://image.pollinations.ai/prompt/{encoded_prompt}?{params}"]
+    if api_key:
+        urls.insert(0, f"https://gen.pollinations.ai/image/{encoded_prompt}?{params}")
+    headers = {}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
@@ -507,6 +620,7 @@ def run_automation():
                     # Wait for Title inside frame
                     frame.wait_for_selector('h1.entry-title .ProseMirror', timeout=30000)
                     frame.locator('h1.entry-title .ProseMirror').fill(title)
+                    time.sleep(1)
 
                     # Image first (hero/card), then body text below it
                     if not img_path:
