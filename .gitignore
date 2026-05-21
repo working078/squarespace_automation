@@ -17,8 +17,8 @@ logs/
 .DS_Store
 Thumbs.db
 
-auth_small.json
+auth_full.json
+auth_github.txt
 auth.json
 error_state.png
-shrink_auth.py
 auth_original.json

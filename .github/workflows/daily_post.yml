@@ -26,8 +26,14 @@ jobs:
       - name: Restore Squarespace session (from Secret)
         run: |
           if [ -n "$AUTH_JSON_BASE64" ]; then
-            echo "$AUTH_JSON_BASE64" | base64 --decode > auth.json
-            echo "Session restored from AUTH_JSON_BASE64 secret."
+            python3 -c "
+import base64, gzip, os
+raw = base64.b64decode(os.environ['AUTH_JSON_BASE64'].strip())
+if raw[:2] == b'\x1f\x8b':
+    raw = gzip.decompress(raw)
+open('auth.json', 'wb').write(raw)
+print(f'Session restored from AUTH_JSON_BASE64 ({len(raw)} bytes).')
+"
           else
             echo "No AUTH_JSON_BASE64 secret found — will try cache next."
           fi
@@ -35,7 +41,7 @@ jobs:
           AUTH_JSON_BASE64: ${{ secrets.AUTH_JSON_BASE64 }}
 
       - name: Restore Squarespace session (from Cache fallback)
-        if: ${{ !env.AUTH_JSON_BASE64 }}
+        if: ${{ secrets.AUTH_JSON_BASE64 == '' }}
         uses: actions/cache@v4
         with:
           path: auth.json
@@ -43,6 +49,12 @@ jobs:
           restore-keys: squarespace-auth-session
         env:
           AUTH_JSON_BASE64: ${{ secrets.AUTH_JSON_BASE64 }}
+
+      - name: Normalize session file size
+        run: |
+          if [ -f auth.json ]; then
+            python3 -c "from session_utils import slim_file; b,a=slim_file(); print(f'auth.json: {b} -> {a} bytes')"
+          fi
 
       - name: Install dependencies
         run: |
