@@ -11,7 +11,15 @@ from zoneinfo import ZoneInfo
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from playwright.sync_api import sync_playwright
-from playwright_stealth import stealth_sync  # FIX #3: correct import
+# Support both playwright-stealth 1.x (stealth_sync) and older versions (Stealth class)
+try:
+    from playwright_stealth import stealth_sync
+    def apply_stealth(page):
+        stealth_sync(page)
+except ImportError:
+    from playwright_stealth import Stealth
+    def apply_stealth(page):
+        Stealth().apply_stealth_sync(page)
 
 # ---------------------------------------------------------------------------
 # CONFIGURATION
@@ -513,8 +521,8 @@ def run_automation():
 
         page = context.new_page()
 
-        # FIX #3: Correct stealth call
-        stealth_sync(page)
+        # FIX #3: Correct stealth call (works with any playwright-stealth version)
+        apply_stealth(page)
 
         try:
             # --- Verify / refresh session ---

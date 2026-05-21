@@ -26,26 +26,24 @@ jobs:
           python-version: '3.11'
 
       # -----------------------------------------------------------------------
-      # 3. Install Python dependencies + Playwright browser
+      # 3. Restore auth.json from Actions Cache (no PAT needed — zero permissions)
+      #    Cache key is fixed so it persists across daily runs indefinitely.
+      # -----------------------------------------------------------------------
+      - name: Restore Squarespace session from cache
+        uses: actions/cache@v4
+        with:
+          path: auth.json
+          key: squarespace-auth-session
+          restore-keys: squarespace-auth-session
+
+      # -----------------------------------------------------------------------
+      # 4. Install Python dependencies + Playwright browser
       # -----------------------------------------------------------------------
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           playwright install chromium --with-deps
-
-      # -----------------------------------------------------------------------
-      # 4. Restore saved session (auth.json) from GitHub Secret
-      #    FIX #2: This decodes the Base64 secret written back by step 6 below.
-      # -----------------------------------------------------------------------
-      - name: Restore Squarespace session
-        run: |
-          if [ -n "${{ secrets.AUTH_JSON_BASE64 }}" ]; then
-            echo "${{ secrets.AUTH_JSON_BASE64 }}" | base64 --decode > auth.json
-            echo "✅ Session restored from AUTH_JSON_BASE64 secret."
-          else
-            echo "⚠️  No AUTH_JSON_BASE64 secret found — script will perform fresh login."
-          fi
 
       # -----------------------------------------------------------------------
       # 5. Run the automation script
@@ -57,29 +55,19 @@ jobs:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           GITHUB_ACTIONS:     "true"
         run: |
-          SCRIPT_PATH=$(find . -name "automation.py" | head -n 1)
-          echo "Running: $SCRIPT_PATH"
-          python "$SCRIPT_PATH"
+          python automation.py
 
       # -----------------------------------------------------------------------
-      # 6. FIX #2: Save updated auth.json back to GitHub Secrets so tomorrow's
-      #    run reuses today's valid session — no daily re-login required.
-      #    Requires a GH_PAT secret with 'secrets:write' scope on this repo.
+      # 6. Save updated auth.json back to Actions Cache for tomorrow's run.
+      #    Uses actions/cache POST — automatically updates the cached file.
+      #    No PAT, no GitHub Secrets write permission needed at all.
       # -----------------------------------------------------------------------
-      - name: Save updated Squarespace session to GitHub Secrets
-        if: always()   # run even if the script step failed (session may still be fresh)
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          if [ -f auth.json ]; then
-            ENCODED=$(base64 -w 0 auth.json)
-            gh secret set AUTH_JSON_BASE64 \
-              --body "$ENCODED" \
-              --repo "${{ github.repository }}"
-            echo "✅ auth.json re-encoded and saved back to AUTH_JSON_BASE64 secret."
-          else
-            echo "⚠️  auth.json not found — secret not updated."
-          fi
+      - name: Save updated Squarespace session to cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: auth.json
+          key: squarespace-auth-session
 
       # -----------------------------------------------------------------------
       # 7. Upload all debug screenshots as workflow artifacts (always runs)
@@ -98,4 +86,4 @@ jobs:
             error_row_*.png
             blog_image.jpg
           retention-days: 7
-          if-no-files-found: ignore   # don't fail the job if no screenshots exist
+          if-no-files-found: ignore
