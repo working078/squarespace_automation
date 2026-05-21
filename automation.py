@@ -467,13 +467,113 @@ def run_publish_confirmation_flow(page):
 # LOGIN / SESSION
 # ---------------------------------------------------------------------------
 
+def _fill_field(page, selectors, value, field_name):
+    """Try multiple selectors to fill a field — stops at first match."""
+    for sel in selectors:
+        try:
+            loc = page.locator(sel)
+            loc.first.wait_for(state="visible", timeout=8000)
+            loc.first.click()
+            loc.first.fill(value)
+            print(f"  Filled {field_name} via: {sel}")
+            return True
+        except Exception:
+            continue
+    return False
+
+
 def do_fresh_login(page, context, email, password):
+    """
+    Robust Squarespace login that handles:
+    - Slow page loads on GitHub Actions cloud IPs
+    - Different label text / input structures across SQS versions
+    - Bot-detection challenges (screenshot saved for diagnosis)
+    """
     print("Performing fresh Squarespace login...")
-    page.goto("https://account.squarespace.com/login", wait_until="domcontentloaded")
-    page.get_by_label("Email address").fill(email)
-    page.get_by_placeholder("Password", exact=True).fill(password)
-    page.get_by_role("button", name="Log In").click()
-    page.wait_for_url(re.compile(r"account\.squarespace\.com/config"), timeout=60000)
+
+    # Navigate and give the page extra time to fully render on cloud IPs
+    page.goto("https://account.squarespace.com/login", wait_until="networkidle", timeout=60000)
+    time.sleep(5)
+
+    # Save what the login page looks like right now (critical for debugging)
+    page.screenshot(path="00_login_page.png")
+    print(f"  Login page URL: {page.url}")
+    print(f"  Page title: {page.title()}")
+
+    # --- Fill email ---
+    email_selectors = [
+        'input[name="email"]',
+        'input[type="email"]',
+        'input[autocomplete="email"]',
+        'input[placeholder*="email" i]',
+        'input[id*="email" i]',
+        '[data-test="email-input"]',
+    ]
+    if not _fill_field(page, email_selectors, email, "email"):
+        page.screenshot(path="00_login_email_fail.png")
+        raise RuntimeError(
+            "Could not find email input on Squarespace login page. "
+            "Check 00_login_page.png in artifacts to see what loaded."
+        )
+
+    time.sleep(1)
+
+    # --- Fill password ---
+    password_selectors = [
+        'input[name="password"]',
+        'input[type="password"]',
+        'input[autocomplete="current-password"]',
+        'input[placeholder*="password" i]',
+        'input[id*="password" i]',
+        '[data-test="password-input"]',
+    ]
+    if not _fill_field(page, password_selectors, password, "password"):
+        page.screenshot(path="00_login_password_fail.png")
+        raise RuntimeError("Could not find password input on Squarespace login page.")
+
+    time.sleep(1)
+
+    # --- Click submit ---
+    submit_selectors = [
+        'button[type="submit"]',
+        'button:has-text("Log In")',
+        'button:has-text("Sign In")',
+        'button:has-text("Continue")',
+        '[data-test="login-button"]',
+        'input[type="submit"]',
+    ]
+    submitted = False
+    for sel in submit_selectors:
+        try:
+            btn = page.locator(sel).first
+            btn.wait_for(state="visible", timeout=5000)
+            btn.click()
+            print(f"  Clicked submit via: {sel}")
+            submitted = True
+            break
+        except Exception:
+            continue
+
+    if not submitted:
+        page.screenshot(path="00_login_submit_fail.png")
+        raise RuntimeError("Could not find login submit button on Squarespace login page.")
+
+    # --- Wait for redirect to config dashboard ---
+    print("  Waiting for post-login redirect...")
+    try:
+        page.wait_for_url(
+            re.compile(r"(account\.squarespace\.com/config|squarespace\.com/config)"),
+            timeout=90000,
+        )
+    except Exception:
+        # May have landed on a 2FA or CAPTCHA page — screenshot it
+        page.screenshot(path="00_login_post_submit.png")
+        print(f"  Post-submit URL: {page.url}")
+        raise RuntimeError(
+            "Login did not redirect to /config after 90s. "
+            "Check 00_login_post_submit.png — may be a 2FA or CAPTCHA challenge."
+        )
+
     context.storage_state(path=AUTH_STATE_PATH)
     print("Login successful — session saved to auth.json.")
 

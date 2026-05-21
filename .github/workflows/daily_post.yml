@@ -78,6 +78,11 @@ jobs:
         with:
           name: debug-screenshots-${{ github.run_number }}
           path: |
+            00_login_page.png
+            00_login_email_fail.png
+            00_login_password_fail.png
+            00_login_submit_fail.png
+            00_login_post_submit.png
             01_initial_landing.png
             02_editor_loaded.png
             04_after_publish_click.png
