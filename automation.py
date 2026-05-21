@@ -578,53 +578,130 @@ def _insert_via_block_plus(page, frame, img_path):
     raise RuntimeError(last_err)
 
 
-def publish_post(page, screenshot_suffix=""):
-    """Click the toolbar PUBLISH button, then confirm (Publish Now)."""
-    print("Publishing post...")
-    dismiss_site_settings_modal(page)
-    page.keyboard.press("Escape")
-    time.sleep(0.5)
-
-    clicked = False
+def save_post_draft(page):
+    """Persist title/body/image in Squarespace before publishing."""
     for locator in (
-        page.get_by_role("button", name=re.compile(r"^PUBLISH$", re.I)),
-        page.locator("button").filter(has_text=re.compile(r"^PUBLISH$", re.I)),
+        page.get_by_role("button", name=re.compile(r"^SAVE$", re.I)),
+        page.locator("button").filter(has_text=re.compile(r"^SAVE$", re.I)),
     ):
         for i in range(locator.count()):
             btn = locator.nth(i)
             try:
                 if btn.is_visible():
                     btn.click(timeout=10000)
-                    clicked = True
-                    print("Clicked visible PUBLISH toolbar button.")
-                    break
+                    print("Clicked SAVE — draft saved in Squarespace.")
+                    time.sleep(6)
+                    return True
             except Exception:
                 continue
-        if clicked:
-            break
+    print("SAVE button not found — continuing without explicit save.")
+    return False
 
-    if not clicked:
-        page.screenshot(path=f"publish_btn_missing_{screenshot_suffix}.png")
-        raise RuntimeError("PUBLISH toolbar button not visible")
 
-    time.sleep(3)
-    confirmed = False
-    for selector in (
-        'button:has-text("Publish Now")',
-        'button:has-text("PUBLISH NOW")',
-        '[data-test="publish-now-button"]',
+def post_still_draft(page):
+    """Top bar shows 'Post · Draft' when not live."""
+    for pattern in (
+        re.compile(r"Post\s*·\s*Draft", re.I),
+        re.compile(r"^\s*Draft\s*$", re.I),
     ):
-        btn = page.locator(selector).first
+        loc = page.get_by_text(pattern)
+        for i in range(loc.count()):
+            try:
+                if loc.nth(i).is_visible():
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+def click_publish_now(page, timeout_ms=25000):
+    """Must click 'Publish Now' — clicking PUBLISH again leaves the post as Draft."""
+    selectors = (
+        page.get_by_role("button", name=re.compile(r"Publish\s*Now", re.I)),
+        page.locator('button:has-text("Publish Now")'),
+        page.locator('button:has-text("PUBLISH NOW")'),
+        page.locator('[data-test="publish-now-button"]'),
+    )
+    last_error = None
+    for loc in selectors:
         try:
-            btn.wait_for(state="visible", timeout=8000)
-            btn.click()
-            confirmed = True
-            print("Clicked Publish Now confirmation.")
-            break
+            btn = loc.first
+            btn.wait_for(state="visible", timeout=timeout_ms)
+            btn.click(timeout=10000)
+            print("Clicked 'Publish Now' — post should go live.")
+            return True
+        except Exception as exc:
+            last_error = exc
+    page.screenshot(path="publish_now_missing.png")
+    raise RuntimeError(
+        "Could not find or click 'Publish Now'. Post will stay Draft. "
+        f"Last error: {last_error}"
+    )
+
+
+def upload_featured_image_in_publish_dialog(page, img_path):
+    """Upload thumbnail/featured image in the publish dialog (Squarespace CDN)."""
+    if not img_path or not os.path.exists(img_path):
+        return False
+    time.sleep(2)
+    if set_files_on_any_input(page, page, img_path):
+        print("Featured image uploaded in publish dialog.")
+        time.sleep(8)
+        return True
+    for trigger in (
+        page.get_by_text(re.compile(r"upload|add image|replace|computer", re.I)),
+        page.locator('[aria-label*="image" i], [aria-label*="upload" i]'),
+    ):
+        if trigger.count() == 0:
+            continue
+        try:
+            with page.expect_file_chooser(timeout=12000) as fc_info:
+                trigger.first.click(force=True)
+            fc_info.value.set_files(img_path)
+            print("Featured image uploaded via file chooser in publish dialog.")
+            time.sleep(8)
+            return True
         except Exception:
             continue
+    print("No upload control in publish dialog — in-article image may be used only.")
+    return False
 
-    if not confirmed:
+
+def publish_post(page, img_path=None, screenshot_suffix=""):
+    """
+    SAVE → PUBLISH menu → Publish → (upload featured image) → Publish Now → verify live.
+    """
+    print("Publishing post...")
+    dismiss_site_settings_modal(page)
+    page.keyboard.press("Escape")
+    time.sleep(0.5)
+
+    save_post_draft(page)
+
+    opened_publish_flow = False
+    dropdown = page.locator('button[data-test="publish-button-dropdown"]')
+    if dropdown.count() > 0:
+        try:
+            if dropdown.first.is_visible():
+                dropdown.first.click(force=True)
+                print("Opened PUBLISH dropdown.")
+                time.sleep(1.5)
+                for label in ("Publish", "Publish now"):
+                    item = page.get_by_role("menuitem", name=re.compile(f"^{label}$", re.I))
+                    if item.count() == 0:
+                        item = page.get_by_text(label, exact=True)
+                    for i in range(item.count()):
+                        if item.nth(i).is_visible():
+                            item.nth(i).click(force=True)
+                            opened_publish_flow = True
+                            print(f"Selected '{label}' from PUBLISH menu.")
+                            break
+                    if opened_publish_flow:
+                        break
+        except Exception as exc:
+            print(f"PUBLISH dropdown flow failed: {exc}")
+
+    if not opened_publish_flow:
         for locator in (
             page.get_by_role("button", name=re.compile(r"^PUBLISH$", re.I)),
             page.locator("button").filter(has_text=re.compile(r"^PUBLISH$", re.I)),
@@ -633,20 +710,32 @@ def publish_post(page, screenshot_suffix=""):
                 btn = locator.nth(i)
                 try:
                     if btn.is_visible():
-                        btn.click(timeout=5000)
-                        confirmed = True
-                        print("Clicked visible PUBLISH in confirmation dialog.")
+                        btn.click(timeout=10000)
+                        opened_publish_flow = True
+                        print("Clicked main PUBLISH toolbar button.")
                         break
                 except Exception:
                     continue
-            if confirmed:
+            if opened_publish_flow:
                 break
 
-    if not confirmed:
-        print("Warning: Publish confirmation not found — post may remain draft.")
-        page.screenshot(path=f"publish_dialog_{screenshot_suffix}.png")
+    if not opened_publish_flow:
+        page.screenshot(path=f"publish_btn_missing_{screenshot_suffix}.png")
+        raise RuntimeError("Could not open publish flow — post not published.")
 
-    time.sleep(8)
+    time.sleep(2)
+    upload_featured_image_in_publish_dialog(page, img_path)
+    click_publish_now(page)
+
+    time.sleep(10)
+    if post_still_draft(page):
+        page.screenshot(path=f"still_draft_{screenshot_suffix}.png")
+        raise RuntimeError(
+            "Post is still Draft after Publish Now. "
+            "Check still_draft screenshot in workflow artifacts."
+        )
+
+    print("Verified: post is no longer Draft (published).")
     for label in ("Done", "Close"):
         btn = page.get_by_role("button", name=label)
         for i in range(btn.count()):
@@ -849,18 +938,20 @@ def run_automation():
                     time.sleep(1)
 
                     if img_path or image_url:
-                        print("Adding hero image to post...")
-                        add_post_image(page, frame, img_path, image_url, title)
-                    else:
-                        raise RuntimeError("Image generation failed — cannot publish without hero image.")
+                        print("Adding in-article hero image...")
+                        try:
+                            add_post_image(page, frame, img_path, image_url, title)
+                            save_post_draft(page)
+                        except Exception as img_exc:
+                            print(f"In-article image embed failed (will use publish dialog): {img_exc}")
 
                     page.screenshot(path=f"before_publish_{offset}.png")
 
-                    publish_post(page, screenshot_suffix=str(offset))
+                    publish_post(page, img_path=img_path, screenshot_suffix=str(offset))
                     page.screenshot(path=f"after_publish_{offset}.png")
 
                     update_sheet_status(service, tab, offset, "Posted")
-                    print(f"Success: {title}")
+                    print(f"Success (published live): {title}")
                     if img_path and os.path.exists(img_path):
                         os.remove(img_path)
 
