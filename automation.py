@@ -237,84 +237,167 @@ def format_blog_body(content, post_date):
     return body + footer
 
 
-def open_post_settings(page):
-    """Open the post settings panel (thumbnail / excerpt live here)."""
-    candidates = [
-        page.locator('[data-testid="settings-icon"]'),
-        page.get_by_role("button", name="Settings"),
-        page.locator('button[aria-label*="Settings"i]'),
+def dismiss_site_settings_modal(page):
+    """Close the site-wide Settings panel if it was opened by mistake."""
+    if page.get_by_role("heading", name="Settings").count() > 0 and page.get_by_text("Website", exact=True).count() > 0:
+        print("Closing site Settings modal (not post settings)...")
+        close_btn = page.locator('button[aria-label="Close"]')
+        if close_btn.count() > 0:
+            close_btn.first.click()
+        else:
+            page.keyboard.press("Escape")
+        time.sleep(1)
+
+
+def is_valid_jpeg(data):
+    return isinstance(data, bytes) and len(data) > 10000 and data[:3] == b"\xff\xd8\xff"
+
+
+def set_files_on_any_input(page, frame, img_path):
+    """Attach a file to the first available upload input (iframe or parent page)."""
+    for root_name, root in (("editor", frame), ("page", page)):
+        inputs = root.locator('input[type="file"]')
+        count = inputs.count()
+        for i in range(count):
+            try:
+                inputs.nth(i).set_input_files(img_path, timeout=8000)
+                print(f"Attached image via {root_name} file input #{i}")
+                return True
+            except Exception:
+                continue
+    return False
+
+
+def insert_image_in_editor(page, frame, img_path):
+    """
+    Add an image block at the top of the post body (inside the editor iframe).
+    Squarespace blog templates use this as the card/hero image on /blog/.
+    """
+    print(f"Inserting image in post editor: {img_path}")
+    editor = frame.locator(".tiptap.ProseMirror").first
+    editor.click()
+    time.sleep(1)
+    editor.press("Home")
+    time.sleep(0.5)
+    editor.press("/")
+    time.sleep(1.5)
+
+    for selector in (
+        frame.get_by_role("option", name="Image"),
+        frame.get_by_text("Image", exact=True),
+        frame.locator('[data-item-name="image"]'),
+    ):
+        if selector.count() > 0:
+            selector.first.click()
+            break
+    else:
+        raise RuntimeError("Image block not found in editor slash menu")
+
+    time.sleep(2)
+    if set_files_on_any_input(page, frame, img_path):
+        time.sleep(12)
+        return
+
+    upload_triggers = [
+        frame.get_by_text(re.compile(r"upload|computer|browse|device", re.I)),
+        page.get_by_text(re.compile(r"upload|computer|browse|device", re.I)),
     ]
-    for locator in candidates:
-        if locator.count() == 0:
+    for trigger in upload_triggers:
+        if trigger.count() == 0:
             continue
-        btn = locator.first
-        try:
-            btn.wait_for(state="visible", timeout=5000)
-            btn.click(force=True)
-            return
-        except Exception:
-            continue
-    page.evaluate(
-        """() => {
-            const el = document.querySelector('[data-testid="settings-icon"]');
-            if (el) { el.click(); return true; }
-            return false;
-        }"""
-    )
+        with page.expect_file_chooser(timeout=15000) as fc_info:
+            trigger.first.click(force=True)
+        fc_info.value.set_files(img_path)
+        time.sleep(12)
+        print("Image attached via file chooser.")
+        return
+
+    raise RuntimeError("No file upload control found after adding Image block")
 
 
-def close_post_settings(page):
+def try_publish_menu_post_settings(page, img_path=None, excerpt=None):
+    """
+    Optional fallback: PUBLISH dropdown → post settings (thumbnail field).
+    Never uses data-testid=settings-icon (that opens site Settings).
+    """
+    dismiss_site_settings_modal(page)
+    dropdown = page.locator('button[data-test="publish-button-dropdown"]')
+    if dropdown.count() == 0:
+        return False
+
+    dropdown.first.click()
+    time.sleep(1)
+    opened = False
+    for label in ("Post Settings", "Settings", "SEO", "Options"):
+        item = page.get_by_text(label, exact=False)
+        if item.count() > 0:
+            item.first.click()
+            opened = True
+            break
+    if not opened:
+        page.keyboard.press("Escape")
+        return False
+
+    time.sleep(2)
+    if img_path and os.path.exists(img_path):
+        if not set_files_on_any_input(page, page, img_path):
+            for click_target in (
+                page.get_by_text(re.compile(r"add|upload|replace", re.I)),
+                page.locator('[aria-label*="image" i]'),
+            ):
+                if click_target.count() > 0:
+                    click_target.first.click()
+                    time.sleep(1)
+                    if set_files_on_any_input(page, page, img_path):
+                        break
+        time.sleep(10)
+
+    if excerpt:
+        field = page.get_by_label("Excerpt", exact=False)
+        if field.count() == 0:
+            field = page.locator('textarea[placeholder*="Excerpt" i]')
+        if field.count() > 0:
+            field.first.fill(excerpt)
+
     for label in ("Done", "Close", "Save"):
         btn = page.get_by_role("button", name=label)
         if btn.count() > 0:
             btn.first.click()
             time.sleep(1)
-            return
+            return True
     page.keyboard.press("Escape")
+    return True
 
 
-def configure_post_metadata(page, img_path=None, excerpt=None):
-    """
-    Open Post Settings once: set thumbnail (blog card image) and excerpt.
-    Matches metroexpress.com.au/blog/ listing structure (image + teaser text).
-    """
-    open_post_settings(page)
-    time.sleep(2)
+def configure_post_metadata(page, frame, img_path=None, excerpt=None):
+    """Upload hero/card image and set excerpt when controls are available."""
+    dismiss_site_settings_modal(page)
+    image_ok = not img_path
 
     if img_path and os.path.exists(img_path):
-        print(f"Uploading featured image: {img_path}")
-        file_input = page.locator('input[type="file"]')
-        file_input.first.wait_for(state="attached", timeout=20000)
-        file_input.first.set_input_files(img_path)
+        errors = []
         try:
-            page.wait_for_function(
-                """() => {
-                    const imgs = document.querySelectorAll(
-                        'img[src*="squarespace"], img[src*="blob:"], img[src*="images"]'
-                    );
-                    return imgs.length > 0;
-                }""",
-                timeout=45000,
-            )
-            print("Thumbnail preview detected.")
+            insert_image_in_editor(page, frame, img_path)
+            image_ok = True
+            print("Image upload succeeded via editor image block.")
+        except Exception as exc:
+            errors.append(f"editor: {exc}")
+            dismiss_site_settings_modal(page)
+            if try_publish_menu_post_settings(page, img_path=img_path, excerpt=excerpt):
+                image_ok = True
+                print("Image upload succeeded via publish menu settings.")
+            else:
+                errors.append("publish menu: panel not available")
+
+        if not image_ok:
+            page.screenshot(path="image_upload_failed.png")
+            raise RuntimeError("Image upload failed — " + "; ".join(errors))
+
+    if excerpt and image_ok:
+        try:
+            try_publish_menu_post_settings(page, excerpt=excerpt)
         except Exception:
-            print("Thumbnail preview not detected; waiting for upload...")
-            time.sleep(12)
-
-    if excerpt:
-        field = page.get_by_label("Excerpt", exact=False)
-        if field.count() == 0:
-            field = page.locator(
-                'textarea[placeholder*="Excerpt" i], textarea[name*="excerpt" i]'
-            )
-        if field.count() > 0:
-            field.first.fill(excerpt)
-            print("Excerpt set for blog listing.")
-        else:
-            print("Excerpt field not found; listing may use the opening paragraph.")
-
-    close_post_settings(page)
-    print("Post settings saved.")
+            print("Excerpt not set; blog listing will use the opening paragraph.")
 
 
 def generate_image(prompt, filename="blog_image.jpg"):
@@ -322,18 +405,28 @@ def generate_image(prompt, filename="blog_image.jpg"):
     seed = random.randint(1, 1000000)
     full_prompt = f"Professional transport logistics photography, Australian trucking, {prompt}"
     encoded_prompt = urllib.parse.quote(full_prompt)
-    url = f"https://pollinations.ai/p/{encoded_prompt}?width=1024&height=1024&seed={seed}&model=flux"
-    
-    try:
-        response = requests.get(url, timeout=90)
-        if response.status_code == 200 and len(response.content) > 1000:
-            with open(filename, 'wb') as f:
-                f.write(response.content)
-            print(f"Image saved ({len(response.content) // 1024} KB)")
-            return os.path.abspath(filename)
-        print(f"Image generation bad response: status={response.status_code}")
-    except Exception as e:
-        print(f"Image generation failed: {e}")
+    params = f"width=1024&height=1024&seed={seed}&model=flux"
+    urls = [
+        f"https://gen.pollinations.ai/image/{encoded_prompt}?{params}",
+        f"https://image.pollinations.ai/prompt/{encoded_prompt}?{params}",
+    ]
+    headers = {}
+    api_key = os.getenv("POLLINATIONS_API_KEY", "").strip()
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    for url in urls:
+        try:
+            response = requests.get(url, timeout=90, headers=headers, allow_redirects=True)
+            if response.status_code == 200 and is_valid_jpeg(response.content):
+                with open(filename, "wb") as f:
+                    f.write(response.content)
+                print(f"Image saved ({len(response.content) // 1024} KB) from {url.split('/')[2]}")
+                return os.path.abspath(filename)
+            preview = response.content[:40]
+            print(f"Bad image from {url.split('/')[2]}: status={response.status_code}, bytes={len(response.content)}, head={preview!r}")
+        except Exception as e:
+            print(f"Request failed for {url.split('/')[2]}: {e}")
     return None
 
 def run_automation():
@@ -415,15 +508,18 @@ def run_automation():
                     frame.wait_for_selector('h1.entry-title .ProseMirror', timeout=30000)
                     frame.locator('h1.entry-title .ProseMirror').fill(title)
 
-                    body_text = format_blog_body(content, post_date)
-                    frame.locator('.tiptap.ProseMirror').fill(body_text)
-
-                    # Thumbnail + excerpt (blog index layout like metroexpress.com.au/blog/)
+                    # Image first (hero/card), then body text below it
+                    if not img_path:
+                        print("WARNING: No valid JPEG generated — post will publish without image.")
                     configure_post_metadata(
                         page,
+                        frame,
                         img_path=img_path if img_path and os.path.exists(img_path) else None,
                         excerpt=build_excerpt(content),
                     )
+
+                    body_text = format_blog_body(content, post_date)
+                    frame.locator('.tiptap.ProseMirror').last.fill(body_text)
                     page.screenshot(path=f"before_publish_{offset}.png")
 
                     # Publish immediately
