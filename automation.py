@@ -469,32 +469,76 @@ def run_publish_confirmation_flow(page):
 
 def do_fresh_login(page, context, email, password):
     """
-    Your proven working login sequence — navigates to /config first so
-    Squarespace handles the OAuth redirect itself, then fills credentials
-    on whatever login page it lands on (account. or login. domain).
-    Screenshot saved for GitHub Actions artifact debugging.
+    Handles Squarespace's OAuth SPA login at login.squarespace.com.
+    The page is a React app — inputs only appear AFTER JS renders,
+    so we must wait for the actual input elements, not just domcontentloaded.
     """
     print("Performing fresh Squarespace login...")
 
-    # Go to config — Squarespace redirects to login if not authenticated.
-    # This works regardless of whether SQS uses account. or login. subdomain.
+    # Navigate to config — SQS redirects to OAuth login automatically
     page.goto("https://account.squarespace.com/config/", wait_until="domcontentloaded")
-    time.sleep(5)
+
+    # The OAuth page is a React SPA — wait for the email input to actually
+    # render in the DOM before trying to interact with it
+    print(f"  Redirected to: {page.url}")
+    print("  Waiting for email input to render (React SPA)...")
+
+    # Wait for ANY email-like input to appear — covers all SQS login page variants
+    email_input = page.locator(
+        'input[type="email"], '
+        'input[name="email"], '
+        'input[autocomplete="email"], '
+        'input[autocomplete="username"]'
+    ).first
+    email_input.wait_for(state="visible", timeout=30000)
 
     page.screenshot(path="00_login_page.png")
-    print(f"  Current URL: {page.url}")
+    print(f"  Login page rendered. URL: {page.url}")
 
-    # Fill credentials — same labels on both squarespace login domains
-    page.get_by_label("Email address").fill(email)
-    page.get_by_placeholder("Password", exact=True).fill(password)
-    page.get_by_role("button", name="Log In").click()
+    # Fill email
+    email_input.click()
+    email_input.fill(email)
+    print("  Email filled.")
+    time.sleep(0.5)
 
-    print("  Credentials submitted — waiting for redirect to /config...")
+    # Fill password — wait for it too in case it appears after email
+    password_input = page.locator(
+        'input[type="password"], '
+        'input[name="password"], '
+        'input[autocomplete="current-password"]'
+    ).first
+    password_input.wait_for(state="visible", timeout=15000)
+    password_input.click()
+    password_input.fill(password)
+    print("  Password filled.")
+    time.sleep(0.5)
 
-    # wait_for_url with glob pattern works across account. and login. subdomains
-    page.wait_for_url("**/config**", timeout=60000)
+    # Click submit — try multiple selectors
+    submitted = False
+    for sel in (
+        'button[type="submit"]',
+        'button:has-text("Log In")',
+        'button:has-text("Sign In")',
+        'button:has-text("Continue")',
+    ):
+        try:
+            btn = page.locator(sel).first
+            if btn.is_visible():
+                btn.click()
+                submitted = True
+                print(f"  Submit clicked via: {sel}")
+                break
+        except Exception:
+            continue
 
-    # Persist the session immediately after successful login
+    if not submitted:
+        page.screenshot(path="00_login_submit_fail.png")
+        raise RuntimeError("Could not find login submit button.")
+
+    print("  Waiting for redirect back to /config...")
+    page.wait_for_url("**/config**", timeout=90000)
+
+    # Save session so tomorrow's run skips login entirely
     context.storage_state(path=AUTH_STATE_PATH)
     page.screenshot(path="00_login_success.png")
     print("  Login successful — session saved to auth.json.")
@@ -552,15 +596,27 @@ def run_automation():
             page.goto("https://account.squarespace.com/config/", wait_until="domcontentloaded")
             time.sleep(5)
 
+            current_url = page.url
+            print(f"  Post-load URL: {current_url}")
+
+            # Session is invalid if SQS redirected us away from /config to a
+            # login page. The OAuth URL contains /authorize — that is the signal.
+            # Do NOT check for "login" in URL — the OAuth domain is login.squarespace.com
+            # which would always match even during a valid redirect flow.
             session_invalid = (
-                "login" in page.url
-                or page.locator('input[name="email"]').is_visible()
+                "/authorize" in current_url
+                or "/login" in current_url
+                or page.locator('input[type="email"], input[name="email"]').count() > 0
             )
+
             if session_invalid:
+                print("  Session invalid or expired — performing fresh login...")
                 do_fresh_login(page, context, EMAIL, PASSWORD)
+            else:
+                print("  Session valid — skipping login.")
 
             page.screenshot(path="01_initial_landing.png")
-            print("Session verified — screenshot saved.")
+            print("Session check complete — screenshot saved.")
 
             # --- Process each queued row ---
             for offset, row, post_date in work_items:
