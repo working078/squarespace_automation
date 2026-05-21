@@ -18,12 +18,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      # -----------------------------------------------------------------------
-      # Restore auth.json — tries GitHub Secret first (manually set),
-      # then falls back to Actions Cache (auto-saved from previous runs).
-      # auth.json is generated LOCALLY via generate_session.py — never from CI.
-      # -----------------------------------------------------------------------
-      - name: Restore Squarespace session (from Secret)
+      - name: Restore auth.json
         run: |
           if [ -n "$AUTH_JSON_BASE64" ]; then
             python3 -c "
@@ -35,26 +30,18 @@ open('auth.json', 'wb').write(raw)
 print(f'Session restored from AUTH_JSON_BASE64 ({len(raw)} bytes).')
 "
           else
-            echo "No AUTH_JSON_BASE64 secret found — will try cache next."
+            echo "No AUTH_JSON_BASE64 secret — trying cache."
           fi
         env:
           AUTH_JSON_BASE64: ${{ secrets.AUTH_JSON_BASE64 }}
 
-      - name: Restore Squarespace session (from Cache fallback)
+      - name: Restore auth from cache
         if: ${{ secrets.AUTH_JSON_BASE64 == '' }}
         uses: actions/cache@v4
         with:
           path: auth.json
           key: squarespace-auth-session
           restore-keys: squarespace-auth-session
-        env:
-          AUTH_JSON_BASE64: ${{ secrets.AUTH_JSON_BASE64 }}
-
-      - name: Normalize session file size
-        run: |
-          if [ -f auth.json ]; then
-            python3 -c "from session_utils import slim_file; b,a=slim_file(); print(f'auth.json: {b} -> {a} bytes')"
-          fi
 
       - name: Install dependencies
         run: |
@@ -70,28 +57,9 @@ print(f'Session restored from AUTH_JSON_BASE64 ({len(raw)} bytes).')
           GITHUB_ACTIONS:     "true"
         run: python automation.py
 
-      # Save updated auth.json to cache so it persists for next run
       - name: Save session to cache
         if: always()
         uses: actions/cache/save@v4
         with:
           path: auth.json
           key: squarespace-auth-session
-
-      - name: Upload debug screenshots
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-screenshots-${{ github.run_number }}
-          path: |
-            00_login_page.png
-            00_login_success.png
-            01_initial_landing.png
-            02_editor_loaded.png
-            04_after_publish_click.png
-            fatal_error.png
-            error_row_*.png
-            add_post_btn_missing.png
-            blog_image.jpg
-          retention-days: 7
-          if-no-files-found: ignore
