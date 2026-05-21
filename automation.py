@@ -469,79 +469,18 @@ def run_publish_confirmation_flow(page):
 
 def do_fresh_login(page, context, email, password):
     """
-    Handles Squarespace's OAuth SPA login at login.squarespace.com.
-    The page is a React app — inputs only appear AFTER JS renders,
-    so we must wait for the actual input elements, not just domcontentloaded.
+    Squarespace blocks GitHub Actions IPs with a blank page on the OAuth flow.
+    Login from CI is not possible. auth.json must be generated locally.
+    See generate_session.py — run it once on your machine, then add the
+    resulting AUTH_JSON_BASE64 value as a GitHub Secret.
     """
-    print("Performing fresh Squarespace login...")
-
-    # Navigate to config — SQS redirects to OAuth login automatically
-    page.goto("https://account.squarespace.com/config/", wait_until="domcontentloaded")
-
-    # The OAuth page is a React SPA — wait for the email input to actually
-    # render in the DOM before trying to interact with it
-    print(f"  Redirected to: {page.url}")
-    print("  Waiting for email input to render (React SPA)...")
-
-    # Wait for ANY email-like input to appear — covers all SQS login page variants
-    email_input = page.locator(
-        'input[type="email"], '
-        'input[name="email"], '
-        'input[autocomplete="email"], '
-        'input[autocomplete="username"]'
-    ).first
-    email_input.wait_for(state="visible", timeout=30000)
-
-    page.screenshot(path="00_login_page.png")
-    print(f"  Login page rendered. URL: {page.url}")
-
-    # Fill email
-    email_input.click()
-    email_input.fill(email)
-    print("  Email filled.")
-    time.sleep(0.5)
-
-    # Fill password — wait for it too in case it appears after email
-    password_input = page.locator(
-        'input[type="password"], '
-        'input[name="password"], '
-        'input[autocomplete="current-password"]'
-    ).first
-    password_input.wait_for(state="visible", timeout=15000)
-    password_input.click()
-    password_input.fill(password)
-    print("  Password filled.")
-    time.sleep(0.5)
-
-    # Click submit — try multiple selectors
-    submitted = False
-    for sel in (
-        'button[type="submit"]',
-        'button:has-text("Log In")',
-        'button:has-text("Sign In")',
-        'button:has-text("Continue")',
-    ):
-        try:
-            btn = page.locator(sel).first
-            if btn.is_visible():
-                btn.click()
-                submitted = True
-                print(f"  Submit clicked via: {sel}")
-                break
-        except Exception:
-            continue
-
-    if not submitted:
-        page.screenshot(path="00_login_submit_fail.png")
-        raise RuntimeError("Could not find login submit button.")
-
-    print("  Waiting for redirect back to /config...")
-    page.wait_for_url("**/config**", timeout=90000)
-
-    # Save session so tomorrow's run skips login entirely
-    context.storage_state(path=AUTH_STATE_PATH)
-    page.screenshot(path="00_login_success.png")
-    print("  Login successful — session saved to auth.json.")
+    raise RuntimeError(
+        "No valid auth.json session found.\n"
+        "Squarespace blocks GitHub Actions IPs — login from CI is impossible.\n"
+        "Fix: run generate_session.py on your LOCAL machine, then add the "
+        "printed AUTH_JSON_BASE64 value as a GitHub Secret.\n"
+        "See README or generate_session.py for full instructions."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -591,32 +530,36 @@ def run_automation():
         apply_stealth(page)
 
         try:
-            # --- Verify / refresh session ---
+            # --- Verify session is valid ---
+            # Squarespace blocks GitHub Actions IPs with a blank page.
+            # auth.json MUST be pre-generated locally via generate_session.py.
+            # If no session file exists, fail immediately with a clear message.
+            if not os.path.exists(AUTH_STATE_PATH):
+                raise RuntimeError(
+                    "auth.json not found. "
+                    "Run generate_session.py on your local machine and add "
+                    "AUTH_JSON_BASE64 as a GitHub Secret. "
+                    "See generate_session.py for instructions."
+                )
+
             print("Verifying session...")
             page.goto("https://account.squarespace.com/config/", wait_until="domcontentloaded")
             time.sleep(5)
 
             current_url = page.url
             print(f"  Post-load URL: {current_url}")
-
-            # Session is invalid if SQS redirected us away from /config to a
-            # login page. The OAuth URL contains /authorize — that is the signal.
-            # Do NOT check for "login" in URL — the OAuth domain is login.squarespace.com
-            # which would always match even during a valid redirect flow.
-            session_invalid = (
-                "/authorize" in current_url
-                or "/login" in current_url
-                or page.locator('input[type="email"], input[name="email"]').count() > 0
-            )
-
-            if session_invalid:
-                print("  Session invalid or expired — performing fresh login...")
-                do_fresh_login(page, context, EMAIL, PASSWORD)
-            else:
-                print("  Session valid — skipping login.")
-
             page.screenshot(path="01_initial_landing.png")
-            print("Session check complete — screenshot saved.")
+
+            # If SQS bounced us to the OAuth login page, session has expired.
+            # The user must re-run generate_session.py locally to get a fresh one.
+            if "/authorize" in current_url or "/login" in current_url:
+                raise RuntimeError(
+                    "Session expired — auth.json is no longer valid.\n"
+                    "Re-run generate_session.py on your local machine to get a "
+                    "fresh session, then update the AUTH_JSON_BASE64 GitHub Secret."
+                )
+
+            print("  Session valid — proceeding to post editor.")
 
             # --- Process each queued row ---
             for offset, row, post_date in work_items:

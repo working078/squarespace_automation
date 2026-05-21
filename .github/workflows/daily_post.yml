@@ -2,76 +2,70 @@ name: Daily Blog Poster
 
 on:
   schedule:
-    # 21:00 UTC = 07:00 AEST (UTC+10) — runs daily at exactly 7 AM Melbourne time
     - cron: '0 21 * * *'
-  workflow_dispatch:   # allows manual trigger from GitHub Actions UI
+  workflow_dispatch:
 
 jobs:
   post:
     runs-on: ubuntu-latest
 
     steps:
-      # -----------------------------------------------------------------------
-      # 1. Checkout repository
-      # -----------------------------------------------------------------------
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # -----------------------------------------------------------------------
-      # 2. Python environment
-      # -----------------------------------------------------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       # -----------------------------------------------------------------------
-      # 3. Restore auth.json from Actions Cache (no PAT needed — zero permissions)
-      #    Cache key is fixed so it persists across daily runs indefinitely.
+      # Restore auth.json — tries GitHub Secret first (manually set),
+      # then falls back to Actions Cache (auto-saved from previous runs).
+      # auth.json is generated LOCALLY via generate_session.py — never from CI.
       # -----------------------------------------------------------------------
-      - name: Restore Squarespace session from cache
+      - name: Restore Squarespace session (from Secret)
+        run: |
+          if [ -n "$AUTH_JSON_BASE64" ]; then
+            echo "$AUTH_JSON_BASE64" | base64 --decode > auth.json
+            echo "Session restored from AUTH_JSON_BASE64 secret."
+          else
+            echo "No AUTH_JSON_BASE64 secret found — will try cache next."
+          fi
+        env:
+          AUTH_JSON_BASE64: ${{ secrets.AUTH_JSON_BASE64 }}
+
+      - name: Restore Squarespace session (from Cache fallback)
+        if: ${{ !env.AUTH_JSON_BASE64 }}
         uses: actions/cache@v4
         with:
           path: auth.json
           key: squarespace-auth-session
           restore-keys: squarespace-auth-session
+        env:
+          AUTH_JSON_BASE64: ${{ secrets.AUTH_JSON_BASE64 }}
 
-      # -----------------------------------------------------------------------
-      # 4. Install Python dependencies + Playwright browser
-      # -----------------------------------------------------------------------
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           playwright install chromium --with-deps
 
-      # -----------------------------------------------------------------------
-      # 5. Run the automation script
-      # -----------------------------------------------------------------------
       - name: Run automation
         env:
           SQ_EMAIL:           ${{ secrets.SQ_EMAIL }}
           SQ_PASSWORD:        ${{ secrets.SQ_PASSWORD }}
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           GITHUB_ACTIONS:     "true"
-        run: |
-          python automation.py
+        run: python automation.py
 
-      # -----------------------------------------------------------------------
-      # 6. Save updated auth.json back to Actions Cache for tomorrow's run.
-      #    Uses actions/cache POST — automatically updates the cached file.
-      #    No PAT, no GitHub Secrets write permission needed at all.
-      # -----------------------------------------------------------------------
-      - name: Save updated Squarespace session to cache
+      # Save updated auth.json to cache so it persists for next run
+      - name: Save session to cache
         if: always()
         uses: actions/cache/save@v4
         with:
           path: auth.json
           key: squarespace-auth-session
 
-      # -----------------------------------------------------------------------
-      # 7. Upload all debug screenshots as workflow artifacts (always runs)
-      # -----------------------------------------------------------------------
       - name: Upload debug screenshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -79,14 +73,10 @@ jobs:
           name: debug-screenshots-${{ github.run_number }}
           path: |
             00_login_page.png
-            00_login_email_fail.png
-            00_login_password_fail.png
-            00_login_submit_fail.png
-            00_login_post_submit.png
+            00_login_success.png
             01_initial_landing.png
             02_editor_loaded.png
             04_after_publish_click.png
-            featured_image_error.png
             fatal_error.png
             error_row_*.png
             blog_image.jpg
