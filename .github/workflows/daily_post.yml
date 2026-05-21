@@ -79,6 +79,7 @@ jobs:
             04_after_publish_click.png
             fatal_error.png
             error_row_*.png
+            add_post_btn_missing.png
             blog_image.jpg
           retention-days: 7
           if-no-files-found: ignore
