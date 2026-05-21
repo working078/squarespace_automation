@@ -677,14 +677,37 @@ def upload_featured_image_in_publish_dialog(page, img_path):
     return False
 
 
-def run_publish_confirmation_flow(page, img_path=None):
+def upload_featured_image_via_settings(page, img_path):
+    """Upload featured image via post settings panel — no SAVE/draft step."""
+    print("Uploading featured image...")
+    dismiss_site_settings_modal(page)
+    page.keyboard.press("Escape")
+    time.sleep(0.5)
+
+    settings_btn = page.get_by_role("button", name="Settings").or_(
+        page.locator('[data-testid="settings-icon"]')
+    )
+    settings_btn.first.click(force=True)
+    time.sleep(3)
+
+    page.locator('input[type="file"]').first.wait_for(state="attached", timeout=20000)
+    page.locator('input[type="file"]').first.set_input_files(img_path)
+    time.sleep(10)
+
+    done_close = page.get_by_role("button", name="Done").or_(
+        page.get_by_role("button", name="Close")
+    )
+    done_close.first.click(force=True)
+    time.sleep(2)
+
+
+def run_publish_confirmation_flow(page):
     """
-    Bulletproof publish: dropdown → Publish option → confirmation modal → 8s API buffer.
+    Direct publish only — no SAVE/draft before this flow.
     """
     dismiss_site_settings_modal(page)
     page.keyboard.press("Escape")
     time.sleep(0.5)
-    save_post_draft(page)
 
     # 6. PUBLISHING & CONFIRMATION FLOW
     print("Initiating direct publish flow...")
@@ -694,67 +717,32 @@ def run_publish_confirmation_flow(page, img_path=None):
     )
     publish_dropdown.wait_for(state="visible", timeout=15000)
     publish_dropdown.click()
-    time.sleep(3)  # Let the flyout menu render completely
+    print("Clicked the main publish dropdown menu.")
+    time.sleep(3)
 
     publish_option = page.get_by_text("Publish").or_(
         page.get_by_role("button", name=re.compile(r"Publish Immediately", re.I))
     )
     if publish_option.first.is_visible():
         publish_option.first.click()
-        print("Clicked Publish option in dropdown.")
-    else:
-        print("Publish option not visible — trying main PUBLISH toolbar button.")
-        buttons = _visible_publish_buttons(page)
-        if buttons:
-            buttons[0].click()
+        print("Clicked 'Publish' inside the dropdown option.")
     time.sleep(3)
-
-    upload_featured_image_in_publish_dialog(page, img_path)
 
     print("Checking for final confirmation modal...")
     final_publish_btn = (
         page.locator('button:has-text("PUBLISH")')
         .or_(page.locator('button:has-text("Publish Now")'))
-        .or_(page.locator('[data-test="publish-now-button"]'))
         .last
     )
 
     if final_publish_btn.is_visible():
-        print("Clicking final confirmation button.")
+        print("Clicking final confirmation button to go live.")
         final_publish_btn.click()
-        time.sleep(8)
+        time.sleep(10)
     else:
-        print("No secondary confirmation modal detected — trying fallback PUBLISH clicks.")
-        if _try_publish_now_soft(page):
-            time.sleep(8)
-        else:
-            extra = _visible_publish_buttons(page)
-            if len(extra) > 1:
-                extra[-1].click(force=True)
-                time.sleep(8)
-            elif len(extra) == 1:
-                extra[0].click(force=True)
-                time.sleep(8)
-
-    for label in ("Done", "Close"):
-        btn = page.get_by_role("button", name=label)
-        for idx in range(btn.count()):
-            try:
-                if btn.nth(idx).is_visible():
-                    btn.nth(idx).click()
-                    break
-            except Exception:
-                continue
+        print("No secondary modal appeared. Taking verification screenshot.")
 
     page.screenshot(path="04_after_publish_click.png")
-
-    if post_still_draft(page):
-        print("WARNING: UI may still show Draft — check 04_after_publish_click.png in artifacts.")
-
-
-def publish_post(page, img_path=None, screenshot_suffix=""):
-    """Wrapper for the bulletproof publish confirmation flow."""
-    run_publish_confirmation_flow(page, img_path=img_path)
 
 
 def try_publish_menu_post_settings(page, img_path=None, excerpt=None):
@@ -947,20 +935,15 @@ def run_automation():
                     frame.locator('.tiptap.ProseMirror').last.fill(body_text)
                     time.sleep(1)
 
-                    if img_path or image_url:
-                        print("Adding in-article hero image...")
-                        try:
-                            add_post_image(page, frame, img_path, image_url, title)
-                            save_post_draft(page)
-                        except Exception as img_exc:
-                            print(f"In-article image embed failed (will use publish dialog): {img_exc}")
+                    # 5. FEATURED IMAGE UPLOAD (no SAVE — go straight to publish)
+                    if img_path and os.path.exists(img_path):
+                        upload_featured_image_via_settings(page, img_path)
 
-                    page.screenshot(path=f"before_publish_{offset}.png")
-
-                    run_publish_confirmation_flow(page, img_path=img_path)
+                    # --- NO EXPLICIT SAVE DRAFT — direct publish sequence ---
+                    run_publish_confirmation_flow(page)
 
                     update_sheet_status(service, tab, offset, "Posted")
-                    print(f"Success: Post '{title}' processing loop finished.")
+                    print(f"Success: Post '{title}' published live.")
                     if img_path and os.path.exists(img_path):
                         os.remove(img_path)
 
