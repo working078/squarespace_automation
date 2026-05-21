@@ -335,36 +335,184 @@ def _upload_after_image_block_added(page, frame, img_path):
     raise RuntimeError("No file upload control found after adding Image block")
 
 
+PLUS_BUTTON_SELECTORS = (
+    ".sqs-blockinsertion-button",
+    "button.block-insertion-label",
+    ".sqs-layout-insertion-point button",
+    '[class*="BlockInsertion"] button',
+    '[class*="insertion-point"] button',
+)
+
+
+def _count_plus_buttons(page, frame):
+    total = 0
+    for root_name, root in (("page", page), ("iframe", frame)):
+        for sel in PLUS_BUTTON_SELECTORS:
+            n = root.locator(sel).count()
+            if n:
+                print(f"  {n} match for {sel!r} on {root_name}")
+                total += n
+    return total
+
+
+def _reveal_plus_buttons(page, frame):
+    """Hover between title and body — (+) controls often live on the parent page overlay."""
+    title = frame.locator("h1.entry-title").first
+    title.wait_for(state="visible", timeout=15000)
+    title.scroll_into_view_if_needed()
+    box = title.bounding_box()
+    if box:
+        for y_offset in (12, 24, 36, 52):
+            page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] + y_offset)
+            time.sleep(0.7)
+    text_block = frame.locator(".sqs-block-html, .sqs-block-content").first
+    if text_block.count() > 0:
+        text_block.hover()
+        time.sleep(1)
+
+
+def _all_plus_locators(page, frame):
+    locators = []
+    for root in (page, frame):
+        for sel in PLUS_BUTTON_SELECTORS:
+            loc = root.locator(sel)
+            if loc.count() > 0:
+                locators.append(loc)
+    return locators
+
+
 def _insert_via_block_plus(page, frame, img_path):
     """
-    Classic blog editor: click visible (+) on the text block → Image → upload.
+    Classic blog editor: hover insert point → (+) → Image → upload.
+    (+) buttons are often on the parent page, not inside the iframe DOM.
     """
     print("Trying block insertion (+) between title and body...")
-    frame.locator("h1.entry-title").first.wait_for(state="visible", timeout=15000)
-    buttons = frame.locator(".sqs-blockinsertion-button")
-    count = buttons.count()
-    print(f"Found {count} (+) insertion button(s) in editor")
+    frame.locator(".sqs-block, .sqs-block-html, .tiptap.ProseMirror").first.wait_for(
+        state="attached", timeout=30000
+    )
+    time.sleep(2)
+    _reveal_plus_buttons(page, frame)
+    print(f"Insertion controls after hover: {_count_plus_buttons(page, frame)}")
+
     last_err = "no (+) buttons worked"
-    for i in range(count):
-        btn = buttons.nth(i)
-        try:
-            if not btn.is_visible():
-                continue
-            btn.scroll_into_view_if_needed()
-            btn.click(force=True, timeout=8000)
-            print(f"Clicked (+) button index {i}")
-            time.sleep(1.5)
-            if not _click_image_block_option(page, frame):
+    for loc in _all_plus_locators(page, frame):
+        count = loc.count()
+        for i in range(count):
+            btn = loc.nth(i)
+            try:
+                btn.scroll_into_view_if_needed()
+                btn.click(force=True, timeout=8000)
+                print(f"Clicked (+) button index {i}")
+                time.sleep(1.5)
+                if not _click_image_block_option(page, frame):
+                    page.keyboard.press("Escape")
+                    last_err = f"(+) index {i}: Image not in block picker"
+                    continue
+                _upload_after_image_block_added(page, frame, img_path)
+                return
+            except Exception as exc:
+                last_err = f"(+) index {i}: {exc}"
                 page.keyboard.press("Escape")
-                last_err = f"(+) index {i}: Image not in block picker"
-                continue
-            _upload_after_image_block_added(page, frame, img_path)
-            return
-        except Exception as exc:
-            last_err = f"(+) index {i}: {exc}"
-            page.keyboard.press("Escape")
-            time.sleep(0.5)
+                time.sleep(0.5)
+    # Last resort: click (+) via JS inside the iframe document (headless-safe).
+    iframe_el = page.query_selector("iframe#sqs-site-frame")
+    if iframe_el:
+        inner = iframe_el.content_frame()
+        if inner:
+            js_count = inner.evaluate(
+                "() => document.querySelectorAll('.sqs-blockinsertion-button').length"
+            )
+            print(f"JS (+) buttons inside iframe document: {js_count}")
+            if js_count:
+                inner.evaluate(
+                    "() => { const b = document.querySelector('.sqs-blockinsertion-button'); if (b) b.click(); }"
+                )
+                time.sleep(1.5)
+                if _click_image_block_option(page, frame):
+                    _upload_after_image_block_added(page, frame, img_path)
+                    return
+
     raise RuntimeError(last_err)
+
+
+def publish_post(page, screenshot_suffix=""):
+    """Click the toolbar PUBLISH button, then confirm (Publish Now)."""
+    print("Publishing post...")
+    dismiss_site_settings_modal(page)
+    page.keyboard.press("Escape")
+    time.sleep(0.5)
+
+    clicked = False
+    for locator in (
+        page.get_by_role("button", name=re.compile(r"^PUBLISH$", re.I)),
+        page.locator("button").filter(has_text=re.compile(r"^PUBLISH$", re.I)),
+    ):
+        for i in range(locator.count()):
+            btn = locator.nth(i)
+            try:
+                if btn.is_visible():
+                    btn.click(timeout=10000)
+                    clicked = True
+                    print("Clicked visible PUBLISH toolbar button.")
+                    break
+            except Exception:
+                continue
+        if clicked:
+            break
+
+    if not clicked:
+        page.screenshot(path=f"publish_btn_missing_{screenshot_suffix}.png")
+        raise RuntimeError("PUBLISH toolbar button not visible")
+
+    time.sleep(3)
+    confirmed = False
+    for selector in (
+        'button:has-text("Publish Now")',
+        'button:has-text("PUBLISH NOW")',
+        '[data-test="publish-now-button"]',
+    ):
+        btn = page.locator(selector).first
+        try:
+            btn.wait_for(state="visible", timeout=8000)
+            btn.click()
+            confirmed = True
+            print("Clicked Publish Now confirmation.")
+            break
+        except Exception:
+            continue
+
+    if not confirmed:
+        for locator in (
+            page.get_by_role("button", name=re.compile(r"^PUBLISH$", re.I)),
+            page.locator("button").filter(has_text=re.compile(r"^PUBLISH$", re.I)),
+        ):
+            for i in range(locator.count()):
+                btn = locator.nth(i)
+                try:
+                    if btn.is_visible():
+                        btn.click(timeout=5000)
+                        confirmed = True
+                        print("Clicked visible PUBLISH in confirmation dialog.")
+                        break
+                except Exception:
+                    continue
+            if confirmed:
+                break
+
+    if not confirmed:
+        print("Warning: Publish confirmation not found — post may remain draft.")
+        page.screenshot(path=f"publish_dialog_{screenshot_suffix}.png")
+
+    time.sleep(8)
+    for label in ("Done", "Close"):
+        btn = page.get_by_role("button", name=label)
+        for i in range(btn.count()):
+            try:
+                if btn.nth(i).is_visible():
+                    btn.nth(i).click()
+                    break
+            except Exception:
+                continue
 
 
 def insert_image_in_editor(page, frame, img_path):
@@ -589,15 +737,17 @@ def run_automation():
                     add_button.click()
 
                     # Wait for the editor to initialize
-                    time.sleep(15)
+                    time.sleep(20)
 
                     # --- IFRAME HANDLING ---
                     print("Accessing editor iframe...")
-                    iframe_handle = page.wait_for_selector('iframe#sqs-site-frame', timeout=60000)
-                    frame = iframe_handle.content_frame()
+                    page.wait_for_selector("iframe#sqs-site-frame", timeout=60000)
+                    frame = page.frame_locator("iframe#sqs-site-frame")
 
                     # Wait for Title inside frame
-                    frame.wait_for_selector('h1.entry-title .ProseMirror', timeout=30000)
+                    frame.locator("h1.entry-title .ProseMirror").first.wait_for(
+                        state="visible", timeout=30000
+                    )
                     frame.locator('h1.entry-title .ProseMirror').fill(title)
                     time.sleep(1)
 
@@ -615,16 +765,7 @@ def run_automation():
                     frame.locator('.tiptap.ProseMirror').last.fill(body_text)
                     page.screenshot(path=f"before_publish_{offset}.png")
 
-                    # Publish immediately
-                    print("Publishing post...")
-                    page.get_by_text("PUBLISH").first.click()
-                    time.sleep(2)
-                    page.get_by_text("PUBLISH").last.click()
-                    time.sleep(5)
-
-                    if page.get_by_text("Done").count() > 0:
-                        page.get_by_text("Done").last.click()
-
+                    publish_post(page, screenshot_suffix=str(offset))
                     page.screenshot(path=f"after_publish_{offset}.png")
 
                     update_sheet_status(service, tab, offset, "Posted")
