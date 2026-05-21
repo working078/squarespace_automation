@@ -269,18 +269,29 @@ def set_files_on_any_input(page, frame, img_path):
 
 
 def _click_image_block_option(page, frame):
-    """Choose 'Image' from the block picker (iframe or parent UI)."""
+    """Choose 'Image' from the Squarespace block picker (iframe or parent UI)."""
     for root in (frame, page):
-        for locator in (
-            root.get_by_role("button", name=re.compile(r"^image$", re.I)),
-            root.get_by_text(re.compile(r"^image$", re.I)),
-            root.locator('[data-block-type="image"]'),
-            root.locator('[data-collection-type-name="image"]'),
-            root.locator('[class*="ImageBlock"]'),
+        for sel in (
+            ".sqs-blockbutton",
+            ".sqs-blockselector button",
+            '[data-block-type="image"]',
+            '[data-collection-type-name="image"]',
         ):
-            if locator.count() > 0:
-                locator.first.click(force=True)
+            loc = root.locator(sel).filter(has_text=re.compile(r"^image$", re.I))
+            if loc.count() > 0:
+                loc.first.click(force=True, timeout=5000)
                 return True
+        for loc in (
+            root.get_by_role("button", name=re.compile(r"^image$", re.I)),
+            root.get_by_text("Image", exact=True),
+        ):
+            if loc.count() > 0:
+                try:
+                    if loc.first.is_visible():
+                        loc.first.click(force=True, timeout=5000)
+                        return True
+                except Exception:
+                    continue
     return False
 
 
@@ -326,95 +337,45 @@ def _upload_after_image_block_added(page, frame, img_path):
 
 def _insert_via_block_plus(page, frame, img_path):
     """
-    Squarespace Classic blog editor: hover between blocks → (+) → Image.
-    See https://www.aboundwebdesign.com/blog-base/adding-images-to-blog-posts
+    Classic blog editor: click visible (+) on the text block → Image → upload.
     """
     print("Trying block insertion (+) between title and body...")
-    title = frame.locator("h1.entry-title").first
-    title.wait_for(state="visible", timeout=15000)
-    title.scroll_into_view_if_needed()
-    box = title.bounding_box()
-    if not box:
-        raise RuntimeError("Could not locate title block for insertion point")
-
-    # Hover in the gap below the title to reveal the (+) insert control
-    insert_y = box["y"] + box["height"] + 24
-    insert_x = box["x"] + box["width"] / 2
-    page.mouse.move(insert_x, insert_y)
-    time.sleep(2)
-
-    plus = frame.locator(
-        ".sqs-blockinsertion-button, "
-        "button.block-insertion-label, "
-        '[class*="BlockInsertion"] button, '
-        'button[aria-label*="Insert" i]'
-    )
-    if plus.count() == 0:
-        plus = page.locator(
-            '.js-section-toolbar button[aria-label*="Add" i], '
-            '[data-test*="add-block"]'
-        )
-
-    if plus.count() == 0:
-        # New line under title often exposes the insert point
-        title.click()
-        page.keyboard.press("Enter")
-        time.sleep(1.5)
-        page.mouse.move(insert_x, insert_y + 30)
-        time.sleep(2)
-        plus = frame.locator(".sqs-blockinsertion-button, button.block-insertion-label")
-
-    if plus.count() == 0:
-        raise RuntimeError("Block insertion (+) button not found — hover between blocks failed")
-
-    plus.first.click(force=True)
-    time.sleep(1.5)
-    if not _click_image_block_option(page, frame):
-        raise RuntimeError("Image option not found in block picker")
-    _upload_after_image_block_added(page, frame, img_path)
-
-
-def _insert_via_edit_section(page, frame, img_path):
-    """Click EDIT SECTION on the post section, then upload if a file input appears."""
-    print("Trying EDIT SECTION upload...")
-    for locator in (
-        frame.get_by_role("button", name=re.compile(r"edit section", re.I)),
-        frame.get_by_text(re.compile(r"edit section", re.I)),
-        page.get_by_role("button", name=re.compile(r"edit section", re.I)),
-    ):
-        if locator.count() > 0:
-            locator.first.click(force=True)
-            time.sleep(2)
-            break
-
-    if set_files_on_any_input(page, frame, img_path):
-        time.sleep(12)
-        page.keyboard.press("Escape")
-        return
-    raise RuntimeError("EDIT SECTION did not expose a file upload input")
+    frame.locator("h1.entry-title").first.wait_for(state="visible", timeout=15000)
+    buttons = frame.locator(".sqs-blockinsertion-button")
+    count = buttons.count()
+    print(f"Found {count} (+) insertion button(s) in editor")
+    last_err = "no (+) buttons worked"
+    for i in range(count):
+        btn = buttons.nth(i)
+        try:
+            if not btn.is_visible():
+                continue
+            btn.scroll_into_view_if_needed()
+            btn.click(force=True, timeout=8000)
+            print(f"Clicked (+) button index {i}")
+            time.sleep(1.5)
+            if not _click_image_block_option(page, frame):
+                page.keyboard.press("Escape")
+                last_err = f"(+) index {i}: Image not in block picker"
+                continue
+            _upload_after_image_block_added(page, frame, img_path)
+            return
+        except Exception as exc:
+            last_err = f"(+) index {i}: {exc}"
+            page.keyboard.press("Escape")
+            time.sleep(0.5)
+    raise RuntimeError(last_err)
 
 
 def insert_image_in_editor(page, frame, img_path):
-    """
-    Add an image block at the top of the post (Classic Squarespace blog editor).
-    """
+    """Add an image block above the body using the (+) insert controls."""
     print(f"Inserting image in post editor: {img_path}")
-    errors = []
-    for name, action in (
-        ("block plus menu", lambda: _insert_via_block_plus(page, frame, img_path)),
-        ("edit section", lambda: _insert_via_edit_section(page, frame, img_path)),
-    ):
-        try:
-            action()
-            print(f"Image upload succeeded via {name}.")
-            return
-        except Exception as exc:
-            errors.append(f"{name}: {exc}")
-            page.keyboard.press("Escape")
-            time.sleep(1)
-
-    page.screenshot(path="editor_insert_failed.png")
-    raise RuntimeError("; ".join(errors))
+    try:
+        _insert_via_block_plus(page, frame, img_path)
+        print("Image upload succeeded via block (+) menu.")
+    except Exception as exc:
+        page.screenshot(path="editor_insert_failed.png")
+        raise RuntimeError(f"block plus: {exc}") from exc
 
 
 def try_publish_menu_post_settings(page, img_path=None, excerpt=None):
@@ -442,11 +403,21 @@ def try_publish_menu_post_settings(page, img_path=None, excerpt=None):
         return False
     time.sleep(1)
     opened = False
-    for label in ("Post Settings", "Settings", "SEO", "Options"):
-        item = page.get_by_text(label, exact=False)
-        if item.count() > 0:
-            item.first.click()
-            opened = True
+    # Never click plain "Settings" — that matches the hidden site nav and hangs.
+    for label in ("Post Settings", "SEO", "Social", "Options"):
+        item = page.get_by_role("menuitem", name=re.compile(label, re.I))
+        if item.count() == 0:
+            item = page.get_by_text(label, exact=True)
+        for idx in range(item.count()):
+            candidate = item.nth(idx)
+            try:
+                if candidate.is_visible():
+                    candidate.click(force=True, timeout=5000)
+                    opened = True
+                    break
+            except Exception:
+                continue
+        if opened:
             break
     if not opened:
         page.keyboard.press("Escape")
@@ -497,15 +468,23 @@ def configure_post_metadata(page, frame, img_path=None, excerpt=None):
         except Exception as exc:
             errors.append(f"editor: {exc}")
             dismiss_site_settings_modal(page)
-            if try_publish_menu_post_settings(page, img_path=img_path, excerpt=excerpt):
-                image_ok = True
-                print("Image upload succeeded via publish menu settings.")
-            else:
-                errors.append("publish menu: panel not available")
+            try:
+                if try_publish_menu_post_settings(page, img_path=img_path, excerpt=excerpt):
+                    image_ok = True
+                    print("Image upload succeeded via publish menu settings.")
+                else:
+                    errors.append("publish menu: panel not available")
+            except Exception as menu_exc:
+                errors.append(f"publish menu: {menu_exc}")
+                page.keyboard.press("Escape")
 
         if not image_ok:
             page.screenshot(path="image_upload_failed.png")
-            raise RuntimeError("Image upload failed — " + "; ".join(errors))
+            if os.getenv("SKIP_IMAGE_ON_FAIL", "true").lower() == "true":
+                print("WARNING: Image upload failed — continuing to publish (SKIP_IMAGE_ON_FAIL=true).")
+                print("Errors: " + "; ".join(errors))
+            else:
+                raise RuntimeError("Image upload failed — " + "; ".join(errors))
 
     if excerpt and image_ok:
         try:
@@ -559,7 +538,7 @@ def run_automation():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context_args = {
-            "viewport": {'width': 1280, 'height': 800},
+            "viewport": {"width": 1400, "height": 900},
             "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         }
         
