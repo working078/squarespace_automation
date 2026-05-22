@@ -42,13 +42,20 @@ print(f'Session restored from AUTH_JSON_BASE64 ({len(raw)} bytes).')
         env:
           AUTH_JSON_BASE64: ${{ secrets.AUTH_JSON_BASE64 }}
 
-      - name: Restore auth from cache
-        if: ${{ secrets.AUTH_JSON_BASE64 == '' }}
-        uses: actions/cache@v4
+      - name: Restore auth from cache (fallback if secret missing)
+        uses: actions/cache/restore@v4
         with:
           path: auth.json
           key: squarespace-auth-session
           restore-keys: squarespace-auth-session
+
+      - name: Verify auth.json exists
+        run: |
+          if [ ! -f auth.json ]; then
+            echo "::error::auth.json missing. Set AUTH_JSON_BASE64 or restore cache from a prior successful run."
+            exit 1
+          fi
+          ls -la auth.json
 
       - name: Install dependencies
         run: |
