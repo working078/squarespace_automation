@@ -6,6 +6,9 @@ env/
 # Ignore local credentials and sensitive files
 credentials.json
 .env
+.env.test
+test_output/
+.sqs_chrome_profile/
 
 # Ignore Python cache and logs
 __pycache__/
@@ -22,3 +25,9 @@ auth_github.txt
 auth.json
 error_state.png
 auth_original.json
+
+# Local Playwright debug screenshots (do not commit)
+/0*.png
+/error_row_*.png
+/fatal_error.png
+/login_not_complete.png

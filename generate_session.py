@@ -1,72 +1,88 @@
 """
 Run this ONCE on your local machine to generate auth.json.
-Your local IP is not blocked by Squarespace.
+Uses a persistent Chrome profile so login survives blank-page / OAuth issues.
 
 Usage:
-    pip install playwright playwright-stealth
-    playwright install chromium
-    python generate_session.py
-
-GitHub secret: paste the contents of auth_github.txt (slim + gzip if needed).
+    .venv/bin/python generate_session.py
 """
+
+from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
 from session_utils import slim_file, write_github_secret_file
 
-try:
-    from playwright_stealth import stealth_sync
-
-    def apply_stealth(page):
-        stealth_sync(page)
-except ImportError:
-    from playwright_stealth import Stealth
-
-    def apply_stealth(page):
-        Stealth().apply_stealth_sync(page)
-
+LOGIN_URL = "https://login.squarespace.com/"
+DASHBOARD_URL = "https://account.squarespace.com/config/"
+PROFILE_DIR = Path(__file__).resolve().parent / ".sqs_chrome_profile"
 AUTH_STATE_PATH = "auth.json"
 AUTH_FULL_PATH = "auth_full.json"
 
-with sync_playwright() as p:
-    browser = p.chromium.launch(headless=False)
-    context = browser.new_context(
-        viewport={"width": 1400, "height": 900},
-        user_agent=(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/122.0.0.0 Safari/537.36"
-        ),
-    )
-    page = context.new_page()
-    apply_stealth(page)
 
-    print("Opening Squarespace login page...")
-    page.goto("https://account.squarespace.com/config/", wait_until="domcontentloaded")
+def is_logged_in(url: str) -> bool:
+    if "account.squarespace.com" in url:
+        return "/authorize" not in url and "/login" not in url
+    return False
+
+
+def launch_context(p):
+    PROFILE_DIR.mkdir(exist_ok=True)
+    opts = {
+        "user_data_dir": str(PROFILE_DIR),
+        "headless": False,
+        "viewport": {"width": 1400, "height": 900},
+        "locale": "en-AU",
+        "args": ["--disable-blink-features=AutomationControlled"],
+    }
+    try:
+        print("Opening Google Chrome (persistent profile — login is remembered)...")
+        return p.chromium.launch_persistent_context(channel="chrome", **opts)
+    except Exception as e:
+        print(f"System Chrome unavailable ({e}), using Chromium...")
+        return p.chromium.launch_persistent_context(**opts)
+
+
+print("=" * 60)
+print("Squarespace login — save session for automation")
+print("=" * 60)
+
+with sync_playwright() as p:
+    context = launch_context(p)
+    page = context.pages[0] if context.pages else context.new_page()
+
+    print(f"\nOpening {LOGIN_URL}")
+    page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=120000)
 
     print("\n" + "=" * 60)
-    print("A browser window has opened.")
-    print("Please LOG IN manually in that window.")
-    print("Complete any 2FA if prompted.")
-    print("Wait until you see your Squarespace dashboard.")
+    print("IN THE BROWSER WINDOW:")
+    print("  • If the page is WHITE/BLANK → address bar → https://login.squarespace.com")
+    print("  • Log in (email, password, 2FA)")
+    print("  • You must reach the dashboard (site list), NOT stay on a login URL")
+    print("  • Optional: open https://account.squarespace.com/config/")
     print("=" * 60)
-    input("\nPress ENTER here once you are fully logged in and on the dashboard...")
+    input("\nPress ENTER only when you see the Squarespace dashboard...")
+
+    page.goto(DASHBOARD_URL, wait_until="domcontentloaded", timeout=120000)
+    page.wait_for_timeout(4000)
+    current = page.url
+    print(f"\nCurrent URL: {current[:100]}...")
+
+    if not is_logged_in(current):
+        page.screenshot(path="login_not_complete.png")
+        print("\nStill not logged in.")
+        print("The session was NOT saved.")
+        print("Try again: log in fully, then press Enter only on the dashboard.")
+        context.close()
+        raise SystemExit(1)
 
     context.storage_state(path=AUTH_FULL_PATH)
-    print(f"\nFull session saved to {AUTH_FULL_PATH} (local backup only)")
+    print(f"\nFull session saved to {AUTH_FULL_PATH}")
 
     before, after = slim_file(AUTH_FULL_PATH, AUTH_STATE_PATH)
-    payload, fmt, secret_len = write_github_secret_file(AUTH_STATE_PATH, "auth_github.txt")
-    browser.close()
+    _, fmt, secret_len = write_github_secret_file(AUTH_STATE_PATH, "auth_github.txt")
+    context.close()
 
 print(f"\nSlim auth.json: {before:,} -> {after:,} bytes")
-print(f"GitHub secret size: {secret_len:,} chars ({fmt})")
-print("\n" + "=" * 60)
-print("NEXT STEP — GitHub Secret AUTH_JSON_BASE64")
-print("=" * 60)
-print("Open auth_github.txt, copy the single line, paste into:")
-print("  Repo -> Settings -> Secrets and variables -> Actions -> AUTH_JSON_BASE64")
-print("=" * 60)
-if secret_len > 60000:
-    print("WARNING: Still near the 64 KiB limit. If GitHub rejects it, delete")
-    print("AUTH_JSON_BASE64 and rely on Actions cache after one successful run.")
+print(f"GitHub secret payload: {secret_len:,} chars ({fmt}) -> auth_github.txt")
+print("\nUpdate GitHub: Settings -> Secrets -> AUTH_JSON_BASE64 (paste auth_github.txt)")
+print("Then run: ./setup_local_auth.sh")

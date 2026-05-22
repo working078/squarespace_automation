@@ -1,9 +1,16 @@
 name: Daily Blog Poster
 
+# 7:00 Australia/Melbourne (AEST, UTC+10): 21:00 UTC = 07:00 next calendar day in Melbourne.
+# During AEDT (UTC+11) the same cron runs at 08:00 Melbourne — adjust to 20:00 UTC if needed.
 on:
   schedule:
     - cron: '0 21 * * *'
   workflow_dispatch:
+    inputs:
+      test_row_limit:
+        description: 'Max posts this run (use 1 for a smoke test; leave empty for all due rows)'
+        required: false
+        default: ''
 
 jobs:
   post:
@@ -51,10 +58,16 @@ print(f'Session restored from AUTH_JSON_BASE64 ({len(raw)} bytes).')
 
       - name: Run automation
         env:
-          SQ_EMAIL:           ${{ secrets.SQ_EMAIL }}
-          SQ_PASSWORD:        ${{ secrets.SQ_PASSWORD }}
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-          GITHUB_ACTIONS:     "true"
+          SQ_EMAIL:             ${{ secrets.SQ_EMAIL }}
+          SQ_PASSWORD:          ${{ secrets.SQ_PASSWORD }}
+          GOOGLE_CREDENTIALS:   ${{ secrets.GOOGLE_CREDENTIALS }}
+          SPREADSHEET_ID:       ${{ secrets.SPREADSHEET_ID }}
+          POLLINATIONS_API_KEY: ${{ secrets.POLLINATIONS_AI }}
+          HEADLESS:             "true"
+          TEST_ROW_LIMIT:       ${{ github.event.inputs.test_row_limit }}
+          GITHUB_ACTIONS:       "true"
+          # Production only — never set DRY_RUN or test SPREADSHEET_ID/BASE_URL here.
+          DRY_RUN:              ""
         run: python automation.py
 
       - name: Save session to cache

@@ -2,6 +2,8 @@ import os
 import json
 import time
 import re
+import html as html_module
+from pathlib import Path
 import base64
 import requests
 import random
@@ -10,34 +12,122 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from playwright.sync_api import sync_playwright
-# Support both playwright-stealth 1.x (stealth_sync) and older versions (Stealth class)
-try:
-    from playwright_stealth import stealth_sync
-    def apply_stealth(page):
-        stealth_sync(page)
-except ImportError:
-    from playwright_stealth import Stealth
-    def apply_stealth(page):
-        Stealth().apply_stealth_sync(page)
+
+
+def apply_stealth(page):
+    """No-op — playwright_stealth breaks Squarespace config UI in headless mode."""
+    return
 
 # ---------------------------------------------------------------------------
-# CONFIGURATION
+# CONFIGURATION (production defaults — override via env for safe testing)
 # ---------------------------------------------------------------------------
-SPREADSHEET_ID  = '18c9Ly0omriZ6hUUQQVPs4kRx7j_j46tavLtXHdG2jts'
-SCOPES          = ['https://www.googleapis.com/auth/spreadsheets']
-
-# FIX #1: Use the direct /edit composer URL — no page-ID fragility, no "Add Post" button hunt
-BASE_URL        = "https://coconut-radish-an89.squarespace.com"
-COMPOSER_URL    = f"{BASE_URL}/edit"          # opens a blank post canvas immediately
+PRODUCTION_SPREADSHEET_ID = "18c9Ly0omriZ6hUUQQVPs4kRx7j_j46tavLtXHdG2jts"
+PRODUCTION_BASE_URL       = "https://coconut-radish-an89.squarespace.com"
+SCOPES                    = ["https://www.googleapis.com/auth/spreadsheets"]
 
 BOOKING_LINK    = "https://forms.clickup.com/90161562352/f/2kz0rgqg-676/WM5FMNFXZQWBKHRIBF"
-AUTH_STATE_PATH = 'auth.json'
+AUTH_STATE_PATH = "auth.json"
 LOCAL_TZ        = ZoneInfo("Australia/Melbourne")
+TEST_OUTPUT_DIR = "test_output"
+
+
+def _env_truthy(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def is_dry_run() -> bool:
+    return _env_truthy("DRY_RUN")
+
+
+def dry_run_skip_browser() -> bool:
+    return _env_truthy("DRY_RUN_SKIP_BROWSER")
+
+
+def sheet_writes_enabled() -> bool:
+    return not is_dry_run()
+
+
+def active_spreadsheet_id() -> str:
+    return os.getenv("SPREADSHEET_ID", PRODUCTION_SPREADSHEET_ID).strip()
+
+
+def active_base_url() -> str:
+    return os.getenv("BASE_URL", PRODUCTION_BASE_URL).rstrip("/")
+
+
+def active_composer_url() -> str:
+    return f"{active_base_url()}/edit"
+
+
+def using_production_sheet() -> bool:
+    return active_spreadsheet_id() == PRODUCTION_SPREADSHEET_ID
+
+
+def using_production_site() -> bool:
+    return active_base_url().rstrip("/") == PRODUCTION_BASE_URL.rstrip("/")
+
+
+def validate_run_safety():
+    """Block accidental production writes/publish during local testing."""
+    if os.getenv("GITHUB_ACTIONS", "").lower() in ("true", "1") and is_dry_run():
+        raise RuntimeError(
+            "DRY_RUN must not be set in GitHub Actions (production scheduler)."
+        )
+
+    if is_dry_run():
+        print("=" * 60)
+        print("DRY RUN — will NOT publish and will NOT change spreadsheet status")
+        print(f"  Spreadsheet: {active_spreadsheet_id()}")
+        print(f"  Site:        {active_base_url()}")
+        if dry_run_skip_browser():
+            print("  Browser:     skipped (offline layer)")
+        print("=" * 60)
+
+        if using_production_sheet() and not _env_truthy("ALLOW_PRODUCTION_SHEET_READ"):
+            raise RuntimeError(
+                "DRY_RUN with the production Google Sheet is blocked.\n"
+                "  1. File → Make a copy of the spreadsheet for testing\n"
+                "  2. Share the copy with your service account\n"
+                "  3. Set SPREADSHEET_ID to the copy's ID in .env.test\n"
+                "Or set ALLOW_PRODUCTION_SHEET_READ=1 for read-only diagnostics only "
+                "(still no status writes in DRY_RUN)."
+            )
+
+        if not dry_run_skip_browser() and using_production_site():
+            if not _env_truthy("ALLOW_PRODUCTION_SITE"):
+                raise RuntimeError(
+                    "DRY_RUN browser tests on the live Tribe site are blocked.\n"
+                    "  1. Duplicate the site in Squarespace (Settings → Developer Tools)\n"
+                    "  2. Set BASE_URL to the duplicate site's URL in .env.test\n"
+                    "  3. Re-run generate_session.py if needed (same login)\n"
+                    "Or set ALLOW_PRODUCTION_SITE=1 to fill the live editor without "
+                    "publishing (risk: unsaved draft in editor — not recommended)."
+                )
+    else:
+        if using_production_sheet() and not _env_truthy("ALLOW_LIVE_LAYER3"):
+            if active_spreadsheet_id() != PRODUCTION_SPREADSHEET_ID:
+                pass  # test sheet + live site is OK for layer 3 when explicitly run
+        if using_production_sheet() or using_production_site():
+            if _env_truthy("ALLOW_LIVE_LAYER3"):
+                print(
+                    "LIVE LAYER 3 — will publish to live site and update test spreadsheet."
+                )
+            else:
+                print("LIVE RUN — production sheet and/or site may be updated and published.")
+        else:
+            print(
+                f"TEST LIVE RUN — sheet={active_spreadsheet_id()!r} "
+                f"site={active_base_url()!r}"
+            )
 
 
 def _headless_default() -> bool:
     """CI/Linux runners have no display; local Windows can use a visible browser."""
+    override = os.getenv("HEADLESS", "").strip().lower()
+    if override in ("0", "false", "no", "off"):
+        return False
+    if override in ("1", "true", "yes", "on"):
+        return True
     if os.getenv("GITHUB_ACTIONS", "").lower() in ("true", "1"):
         return True
     if os.getenv("CI", "").lower() in ("true", "1"):
@@ -122,13 +212,13 @@ def today_local():
 
 
 def list_sheet_tabs(service):
-    meta = service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
+    meta = service.spreadsheets().get(spreadsheetId=active_spreadsheet_id()).execute()
     return [s["properties"]["title"] for s in meta.get("sheets", [])]
 
 
 def _fetch_column(service, tab, letter, value_render_option):
     result = service.spreadsheets().values().get(
-        spreadsheetId=SPREADSHEET_ID,
+        spreadsheetId=active_spreadsheet_id(),
         range=sheet_range(tab, f"{letter}2:{letter}"),
         valueRenderOption=value_render_option,
     ).execute()
@@ -223,15 +313,32 @@ def select_pending_rows(rows_with_meta):
             f"title={title_preview!r}..."
         )
         pending.append((offset, row, post_date))
+
+    today_rows = [item for item in pending if item[2] == today]
+    if today_rows:
+        print(
+            f"Using {len(today_rows)} row(s) with sheet date = today ({today.isoformat()})"
+        )
+        return today_rows
+    if pending:
+        print(
+            "No Pending row for today — using earlier scheduled date(s). "
+            "Add a row with today's date in column C for same-day posting."
+        )
     return pending
 
 
 def update_sheet_status(service, tab, row_index, status):
+    if not sheet_writes_enabled():
+        print(f"DRY RUN: skip sheet status update → {status!r}")
+        return
     range_name = sheet_range(tab, f"D{row_index + 2}")
-    body = {'values': [[status]]}
+    body = {"values": [[status]]}
     service.spreadsheets().values().update(
-        spreadsheetId=SPREADSHEET_ID, range=range_name,
-        valueInputOption="USER_ENTERED", body=body
+        spreadsheetId=active_spreadsheet_id(),
+        range=range_name,
+        valueInputOption="USER_ENTERED",
+        body=body,
     ).execute()
 
 
@@ -239,24 +346,90 @@ def update_sheet_status(service, tab, row_index, status):
 # CONTENT FORMATTING
 # ---------------------------------------------------------------------------
 
-def format_blog_body(content, post_date):
+_SHEET_CLOSING_RE = re.compile(
+    r"^For customers and businesses located in .+?"
+    r"demand for practical regional delivery services is expected to remain strong "
+    r"across the coming years\.?\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+_TOWN_FROM_CLOSING_RE = re.compile(
+    r"For customers and businesses located in ([^,]+),",
+    re.IGNORECASE,
+)
+
+
+def extract_post_town(content: str) -> str | None:
+    match = _TOWN_FROM_CLOSING_RE.search(str(content))
+    if not match:
+        return None
+    return match.group(1).strip()
+
+
+def _strip_sheet_boilerplate_closing(paragraphs: list[str]) -> list[str]:
+    if not paragraphs:
+        return paragraphs
+    last = paragraphs[-1].strip()
+    if _SHEET_CLOSING_RE.match(last):
+        return paragraphs[:-1]
+    return paragraphs
+
+
+def _paragraphs_to_html(paragraphs: list[str]) -> str:
+    return "".join(f"<p>{html_module.escape(p)}</p>" for p in paragraphs)
+
+
+def _blog_footer_plain(area: str, pub_line: str) -> str:
+    return (
+        "\n\n"
+        "—\n\n"
+        "Ready to book freight or a small move?\n\n"
+        f"Tribe Rural Logistics supports renters and businesses across {area} with "
+        "direct transport, clear communication, and dependable local service.\n\n"
+        f"Request a quote online: {BOOKING_LINK}\n\n"
+        f"{pub_line}"
+    )
+
+
+def _blog_footer_html(area: str, pub_line: str) -> str:
+    tribe = (
+        f"Tribe Rural Logistics supports renters and businesses across {area} with "
+        "direct transport, clear communication, and dependable local service."
+    )
+    link = html_module.escape(BOOKING_LINK, quote=True)
+    return (
+        "<p>—</p>"
+        "<p><strong>Ready to book freight or a small move?</strong></p>"
+        f"<p>{html_module.escape(tribe)}</p>"
+        f'<p><a href="{link}">Request a quote online →</a></p>'
+        f"<p>{html_module.escape(pub_line)}</p>"
+    )
+
+
+def format_blog_body(content, post_date=None, title=None, *, rich: bool = False):
+    """Sheet body plus footer. Use rich=True for HTML (bold + clickable link in editor)."""
     raw        = str(content).strip()
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", raw) if p.strip()]
     if not paragraphs:
         paragraphs = [raw] if raw else [""]
-    body      = "\n\n".join(paragraphs)
-    published = post_date.strftime("%d %B %Y")
-    footer = (
-        "\n\n"
-        "—\n\n"
-        "**Ready to book freight or a small move?**\n\n"
-        "Tribe Rural Logistics supports renters and businesses across Mansfield and "
-        "regional Victoria with direct transport, clear communication, and dependable "
-        "local service.\n\n"
-        f"**[Request a quote online →]({BOOKING_LINK})**\n\n"
-        f"*Published {published} · Tribe Rural Logistics Pty Ltd · ABN 40 677 940 840*"
+
+    town = extract_post_town(raw)
+    if not town and title:
+        m = re.search(r"\bin\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s+Are\b", str(title))
+        if m:
+            town = m.group(1).strip()
+
+    paragraphs = _strip_sheet_boilerplate_closing(paragraphs)
+    area       = f"{town} and regional Victoria" if town else "regional Victoria"
+    published  = post_date.strftime("%d %B %Y") if post_date else ""
+    pub_line   = (
+        f"Published {published} · Tribe Rural Logistics Pty Ltd · ABN 40 677 940 840"
+        if published
+        else "Tribe Rural Logistics Pty Ltd · ABN 40 677 940 840"
     )
-    return body + footer
+    if rich:
+        return _paragraphs_to_html(paragraphs) + _blog_footer_html(area, pub_line)
+    body = "\n\n".join(paragraphs)
+    return body + _blog_footer_plain(area, pub_line)
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +446,10 @@ def generate_image(prompt, filename="blog_image.jpg"):
     full_prompt  = f"Professional transport logistics photography, Australian trucking, {prompt}"
     encoded      = urllib.parse.quote(full_prompt)
     params       = f"width=1024&height=1024&seed={seed}&model=flux"
-    api_key      = os.getenv("POLLINATIONS_API_KEY", "").strip()
+    api_key      = (
+        os.getenv("POLLINATIONS_API_KEY", "").strip()
+        or os.getenv("POLLINATIONS_AI", "").strip()
+    )
     urls         = [f"https://image.pollinations.ai/prompt/{encoded}?{params}"]
     if api_key:
         urls.insert(0, f"https://gen.pollinations.ai/image/{encoded}?{params}")
@@ -307,10 +483,35 @@ def get_editor_content_frame(page):
     return iframe.content_frame()
 
 
-def wait_for_editor_iframe(page, timeout=60000):
+def wait_for_editor_iframe(page, timeout=90000):
     """Wait for the editor iframe to appear and return a frame_locator."""
     page.wait_for_selector("iframe#sqs-site-frame", state="visible", timeout=timeout)
-    return page.frame_locator("iframe#sqs-site-frame")
+    frame = page.frame_locator("iframe#sqs-site-frame")
+    frame.locator(".ProseMirror, .tiptap").first.wait_for(state="visible", timeout=timeout)
+    return frame
+
+
+def navigate_to_blog_composer(page):
+    """
+    Open a new blog post in the Squarespace editor.
+    /edit is a public 404 on this site; use /config/pages → Blog → Add blog post.
+    """
+    base = active_base_url()
+    print("Navigating to blog composer (Pages → Blog → Add post)...")
+
+    page.goto(f"{base}/config/pages", wait_until="domcontentloaded", timeout=90000)
+    time.sleep(6)
+
+    blog_nav = page.get_by_text("Blog", exact=True)
+    blog_nav.first.wait_for(state="visible", timeout=45000)
+    blog_nav.first.click()
+    time.sleep(5)
+
+    add_post = page.locator('[aria-label="Add blog post"]').first
+    add_post.wait_for(state="visible", timeout=45000)
+    add_post.click()
+    time.sleep(10)
+    print(f"Blog composer open: {page.url}")
 
 
 def dismiss_modal_if_open(page):
@@ -341,73 +542,101 @@ def fill_title(frame, title):
     time.sleep(1)
 
 
-def fill_body(frame, body_text):
-    """Type post body into the last ProseMirror editor (not the title one)."""
+def fill_body(frame, body_text, *, rich_html: bool = False):
+    """Fill post body into the last ProseMirror editor (not the title one)."""
     body_loc = frame.locator(".tiptap.ProseMirror").last
     body_loc.wait_for(state="visible", timeout=20000)
     body_loc.click()
-    body_loc.fill(body_text)
-    print("Body filled.")
+    time.sleep(0.3)
+    if rich_html:
+        body_loc.evaluate(
+            """(element, html) => {
+                element.innerHTML = html;
+                element.dispatchEvent(new Event('input', { bubbles: true }));
+            }""",
+            body_text,
+        )
+    else:
+        body_loc.fill(body_text)
+    print("Body filled" + (" (rich HTML)." if rich_html else "."))
     time.sleep(1)
 
 
-# FIX #4: Target POST settings specifically, never the site-wide Settings panel
 def upload_featured_image_via_post_settings(page, img_path):
     """
-    Open the POST settings panel (not the site Settings) and upload the
-    featured/thumbnail image.  Uses precise selectors to avoid the wrong button.
+    Upload the blog featured/thumbnail image via the post options panel.
+    Squarespace 7.1: click the post title in the frame toolbar (e.g. "No Title"),
+    then set the file input — not the old post-settings-button.
     """
     if not img_path or not os.path.exists(img_path):
         print("No image file — skipping featured image upload.")
         return False
 
-    print("Opening Post Settings panel for featured image upload...")
+    print("Opening post options for featured image upload...")
     dismiss_modal_if_open(page)
     page.keyboard.press("Escape")
     time.sleep(0.5)
 
-    # FIX #4: Only click the POST-level settings, never the global "Settings" nav item
-    post_settings_btn = (
-        page.locator('[data-test="post-settings-button"]')
-        .or_(page.locator('button[aria-label="Post Settings"]'))
-        .or_(page.locator('button[aria-label="Options"]'))           # some SQS versions
-        .or_(page.locator('[data-testid="post-settings-button"]'))
-    )
+    opened = False
+    toolbar_title = page.locator('[data-test="frame-toolbar-title"]')
+    if toolbar_title.count():
+        try:
+            toolbar_title.first.click(force=True)
+            time.sleep(2)
+            opened = True
+        except Exception as e:
+            print(f"Could not open post options via toolbar title: {e}")
 
-    if post_settings_btn.count() == 0:
-        print("Post Settings button not found — skipping featured image.")
-        return False
+    if not opened:
+        post_settings_btn = (
+            page.locator('[data-test="post-settings-button"]')
+            .or_(page.locator('button[aria-label="Post Settings"]'))
+            .or_(page.locator('button[aria-label="Options"]'))
+            .or_(page.locator('[data-testid="post-settings-button"]'))
+        )
+        if post_settings_btn.count() == 0:
+            print("Post options panel not found — skipping featured image.")
+            return False
+        post_settings_btn.first.click(force=True)
+        time.sleep(3)
 
-    post_settings_btn.first.click(force=True)
-    time.sleep(3)
+    for tab_name in ("Featured Image", "Featured", "Image", "Social Image"):
+        tab = page.get_by_role("tab", name=re.compile(tab_name, re.I))
+        if tab.count():
+            try:
+                tab.first.click(force=True)
+                time.sleep(1)
+                break
+            except Exception:
+                continue
 
-    # Wait for the file input to appear in the settings panel
     file_input = page.locator('input[type="file"]').first
     try:
         file_input.wait_for(state="attached", timeout=15000)
         file_input.set_input_files(img_path)
-        # FIX #5: Wait for upload to finish instead of blind sleep
         page.wait_for_function(
             "() => !document.querySelector('.sqs-upload-progress, [data-uploading=\"true\"]')",
-            timeout=30000,
+            timeout=45000,
         )
-        print("Featured image uploaded via Post Settings.")
+        time.sleep(2)
+        print("Featured image uploaded via post options panel.")
     except Exception as e:
         print(f"Featured image upload failed: {e}")
         page.screenshot(path="featured_image_error.png")
         page.keyboard.press("Escape")
         return False
 
-    # Close the panel
+    page.keyboard.press("Escape")
+    time.sleep(1)
     for label in ("Done", "Close", "Save"):
-        btn = page.get_by_role("button", name=label)
+        btn = page.get_by_role("button", name=re.compile(f"^{label}$", re.I))
         if btn.count() > 0:
             try:
                 btn.first.click(force=True)
                 break
             except Exception:
                 continue
-    time.sleep(2)
+    time.sleep(1)
     return True
 
 
@@ -481,20 +710,148 @@ def run_publish_confirmation_flow(page):
 # LOGIN / SESSION
 # ---------------------------------------------------------------------------
 
-def do_fresh_login(page, context, email, password):
-    """
-    Squarespace blocks GitHub Actions IPs with a blank page on the OAuth flow.
-    Login from CI is not possible. auth.json must be generated locally.
-    See generate_session.py — run it once on your machine, then add the
-    resulting AUTH_JSON_BASE64 value as a GitHub Secret.
-    """
-    raise RuntimeError(
-        "No valid auth.json session found.\n"
-        "Squarespace blocks GitHub Actions IPs — login from CI is impossible.\n"
-        "Fix: run generate_session.py on your LOCAL machine, then add the "
-        "printed AUTH_JSON_BASE64 value as a GitHub Secret.\n"
-        "See README or generate_session.py for full instructions."
-    )
+def restore_auth_from_github_secret() -> bool:
+    """Build auth.json from AUTH_JSON_BASE64 or auth_github.txt if present."""
+    payload = os.getenv("AUTH_JSON_BASE64", "").strip()
+    if not payload:
+        for name in ("auth_github.txt", "auth_b64.txt"):
+            path = Path(name)
+            if path.exists():
+                payload = path.read_text(encoding="ascii").strip()
+                print(f"Restoring session from {name}...")
+                break
+    if not payload:
+        return False
+    from session_utils import decode_github_secret_payload
+    AUTH_PATH = Path(AUTH_STATE_PATH)
+    AUTH_PATH.write_bytes(decode_github_secret_payload(payload))
+    print(f"Restored {AUTH_STATE_PATH} ({AUTH_PATH.stat().st_size} bytes)")
+    return True
+
+
+def try_local_squarespace_login(page, context, email, password) -> bool:
+    """Log in with email/password on a local machine (not available on GitHub Actions)."""
+    if os.getenv("GITHUB_ACTIONS", "").lower() in ("true", "1"):
+        return False
+    if not email or not password:
+        return False
+    print("Attempting local Squarespace login (no auth.json)...")
+    page.goto("https://login.squarespace.com/", wait_until="networkidle", timeout=90000)
+    time.sleep(4)
+    email_loc = page.locator('input[type="email"]').first
+    email_loc.wait_for(state="attached", timeout=60000)
+    email_loc.fill(email, force=True)
+    page.locator('input[type="password"]').first.fill(password, force=True)
+    for sel in (
+        'button[type="submit"]',
+        'button:has-text("Log In")',
+        'button:has-text("LOG IN")',
+    ):
+        btn = page.locator(sel).first
+        if btn.count() > 0:
+            try:
+                btn.click(timeout=5000)
+                break
+            except Exception:
+                continue
+    try:
+        page.wait_for_url(
+            re.compile(r"(account\.squarespace\.com|/config)"),
+            timeout=120000,
+        )
+    except Exception:
+        page.screenshot(path="login_failed.png")
+        print("Login did not reach dashboard — 2FA or captcha may be required.")
+        print("Run: python generate_session.py  (log in manually in the browser)")
+        return False
+    context.storage_state(path=AUTH_STATE_PATH)
+    print(f"Login OK — saved {AUTH_STATE_PATH}")
+    return True
+
+
+def ensure_squarespace_session(page, context, email, password) -> None:
+    """Load, restore, or create a valid Squarespace session."""
+    if not Path(AUTH_STATE_PATH).exists():
+        restore_auth_from_github_secret()
+    if not Path(AUTH_STATE_PATH).exists():
+        if not try_local_squarespace_login(page, context, email, password):
+            raise RuntimeError(
+                "No auth.json and login failed.\n"
+                "Fix: run generate_session.py, restore_auth.py (from AUTH_JSON_BASE64), "
+                "or set SQ_EMAIL + SQ_PASSWORD for local login."
+            )
+    print("Verifying session...")
+    check_url = f"{active_base_url()}/config/pages"
+    page.goto(check_url, wait_until="domcontentloaded", timeout=90000)
+    time.sleep(6)
+    current_url = page.url
+    print(f"  Post-load URL: {current_url}")
+    page.screenshot(path="01_initial_landing.png")
+    if "/authorize" in current_url or "login.squarespace.com" in current_url:
+        if try_local_squarespace_login(page, context, email, password):
+            page.goto(check_url, wait_until="domcontentloaded", timeout=90000)
+            time.sleep(6)
+            current_url = page.url
+        if "/authorize" in current_url or "login.squarespace.com" in current_url:
+            raise RuntimeError(
+                "Session expired — re-run generate_session.py or restore AUTH_JSON_BASE64."
+            )
+    if page.get_by_text("Blog", exact=True).count() == 0:
+        raise RuntimeError(
+            "Session loaded but site editor did not open. "
+            "Re-run generate_session.py while logged into this site."
+        )
+    print("  Session valid — proceeding to post editor.")
+
+
+# ---------------------------------------------------------------------------
+# OFFLINE TEST LAYER (sheet + formatting + image — no Squarespace)
+# ---------------------------------------------------------------------------
+
+def _test_output_path(name: str) -> str:
+    os.makedirs(TEST_OUTPUT_DIR, exist_ok=True)
+    return os.path.join(TEST_OUTPUT_DIR, name)
+
+
+def run_offline_test():
+    """Layer 1: validate sheet logic and image API without opening Squarespace."""
+    validate_run_safety()
+    creds = get_credentials()
+    service = build("sheets", "v4", credentials=creds)
+    tab = resolve_sheet_tab(service)
+    rows_with_meta = fetch_sheet_rows(service, tab)
+    work_items = select_pending_rows(rows_with_meta)
+
+    if not work_items:
+        dump_row_diagnostics(rows_with_meta)
+        print("No pending posts for today or earlier. Nothing to preview.")
+        return
+
+    limit = max(1, int(os.getenv("TEST_ROW_LIMIT", "1")))
+    work_items = work_items[:limit]
+    print(f"Offline preview for {len(work_items)} row(s) (TEST_ROW_LIMIT={limit})")
+
+    for offset, row, post_date in work_items:
+        sheet_row = offset + 2
+        title = str(row[0]).strip()
+        content = str(row[1]).strip()
+        print(f"\n--- Row {sheet_row}: {title!r} ---")
+        body_text = format_blog_body(content, post_date, title=title)
+        body_path = _test_output_path(f"row_{sheet_row}_body.md")
+        with open(body_path, "w", encoding="utf-8") as f:
+            f.write(body_text)
+        print(f"  Body preview saved: {body_path}")
+
+        img_name = f"row_{sheet_row}_image.jpg"
+        img_path, image_url = generate_image(title, filename=_test_output_path(img_name))
+        if img_path:
+            print(f"  Image saved: {img_path}")
+            if image_url:
+                print(f"  Image URL: {image_url}")
+        else:
+            print("  Image generation failed (post could still run without thumbnail).")
+
+    print("\nOffline layer complete — production sheet unchanged, no site access.")
 
 
 # ---------------------------------------------------------------------------
@@ -502,6 +859,12 @@ def do_fresh_login(page, context, email, password):
 # ---------------------------------------------------------------------------
 
 def run_automation():
+    validate_run_safety()
+
+    if is_dry_run() and dry_run_skip_browser():
+        run_offline_test()
+        return
+
     # --- Google Sheets setup ---
     creds   = get_credentials()
     service = build('sheets', 'v4', credentials=creds)
@@ -515,8 +878,15 @@ def run_automation():
         print("No pending posts found for today or earlier. Exiting.")
         return
 
+    if is_dry_run():
+        limit = max(1, int(os.getenv("TEST_ROW_LIMIT", "1")))
+        work_items = work_items[:limit]
+        print(f"DRY RUN: processing {len(work_items)} row(s) (TEST_ROW_LIMIT={limit})")
+
     EMAIL    = os.getenv("SQ_EMAIL")
     PASSWORD = os.getenv("SQ_PASSWORD")
+
+    from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=HEADLESS)
@@ -549,32 +919,7 @@ def run_automation():
             # Squarespace blocks GitHub Actions IPs with a blank page.
             # auth.json MUST be pre-generated locally via generate_session.py.
             # If no session file exists, fail immediately with a clear message.
-            if not os.path.exists(AUTH_STATE_PATH):
-                raise RuntimeError(
-                    "auth.json not found. "
-                    "Run generate_session.py on your local machine and add "
-                    "AUTH_JSON_BASE64 as a GitHub Secret. "
-                    "See generate_session.py for instructions."
-                )
-
-            print("Verifying session...")
-            page.goto("https://account.squarespace.com/config/", wait_until="domcontentloaded")
-            time.sleep(5)
-
-            current_url = page.url
-            print(f"  Post-load URL: {current_url}")
-            page.screenshot(path="01_initial_landing.png")
-
-            # If SQS bounced us to the OAuth login page, session has expired.
-            # The user must re-run generate_session.py locally to get a fresh one.
-            if "/authorize" in current_url or "/login" in current_url:
-                raise RuntimeError(
-                    "Session expired — auth.json is no longer valid.\n"
-                    "Re-run generate_session.py on your local machine to get a "
-                    "fresh session, then update the AUTH_JSON_BASE64 GitHub Secret."
-                )
-
-            print("  Session valid — proceeding to post editor.")
+            ensure_squarespace_session(page, context, EMAIL, PASSWORD)
 
             # --- Process each queued row ---
             for offset, row, post_date in work_items:
@@ -596,13 +941,9 @@ def run_automation():
                     # --- Generate image ---
                     img_path, image_url = generate_image(title)
 
-                    # FIX #1: Navigate directly to the composer — no page-ID, no "Add Post" click
-                    print(f"Navigating to direct composer URL: {COMPOSER_URL}")
-                    page.goto(COMPOSER_URL, wait_until="domcontentloaded", timeout=60000)
-
-                    # FIX #5: Wait for the iframe properly instead of time.sleep(20)
+                    navigate_to_blog_composer(page)
                     print("Waiting for editor iframe...")
-                    frame = wait_for_editor_iframe(page, timeout=60000)
+                    frame = wait_for_editor_iframe(page, timeout=90000)
 
                     page.screenshot(path="02_editor_loaded.png")
                     print("Editor loaded — screenshot saved.")
@@ -611,19 +952,25 @@ def run_automation():
                     fill_title(frame, title)
 
                     # --- Fill body ---
-                    body_text = format_blog_body(content, post_date)
-                    fill_body(frame, body_text)
+                    body_text = format_blog_body(
+                        content, post_date, title=title, rich=True
+                    )
+                    fill_body(frame, body_text, rich_html=True)
 
                     # --- Featured image (FIX #4: post settings, not site settings) ---
                     if img_path and os.path.exists(img_path):
                         upload_featured_image_via_post_settings(page, img_path)
 
-                    # --- Publish directly (no Save Draft) ---
-                    run_publish_confirmation_flow(page)
-
-                    # --- Mark success ---
-                    update_sheet_status(service, tab, offset, "Posted")
-                    print(f"✅  Row {sheet_row} — post '{title}' published successfully.")
+                    if is_dry_run():
+                        page.screenshot(path=_test_output_path(f"row_{sheet_row}_dry_run_editor.png"))
+                        print(
+                            f"DRY RUN: editor filled for row {sheet_row} — "
+                            "publish skipped; sheet status unchanged."
+                        )
+                    else:
+                        run_publish_confirmation_flow(page)
+                        update_sheet_status(service, tab, offset, "Posted")
+                        print(f"✅  Row {sheet_row} — post '{title}' published successfully.")
 
                 except Exception as row_error:
                     # FIX #7 & #8: Screenshot + mark as Failed so it is retryable
@@ -639,11 +986,27 @@ def run_automation():
 
         except Exception as fatal:
             print(f"Fatal error: {fatal}")
-            page.screenshot(path="fatal_error.png")
+            try:
+                page.screenshot(path="fatal_error.png")
+            except Exception:
+                pass
+            raise SystemExit(1) from fatal
 
         finally:
             browser.close()
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Squarespace blog automation")
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="Layer 1 only: sheet + body + image (sets DRY_RUN, no browser)",
+    )
+    args = parser.parse_args()
+    if args.offline:
+        os.environ.setdefault("DRY_RUN", "1")
+        os.environ.setdefault("DRY_RUN_SKIP_BROWSER", "1")
     run_automation()
