@@ -876,6 +876,11 @@ def run_automation():
     if not work_items:
         dump_row_diagnostics(rows_with_meta)
         print("No pending posts found for today or earlier. Exiting.")
+        if os.getenv("GITHUB_ACTIONS", "").lower() in ("true", "1"):
+            raise SystemExit(
+                "No Pending rows with date <= today (Melbourne). "
+                "Set column D to Pending on the sheet used by SPREADSHEET_ID."
+            )
         return
 
     if is_dry_run():
