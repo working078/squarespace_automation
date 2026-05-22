@@ -25,22 +25,11 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Restore auth.json
-        run: |
-          if [ -n "$AUTH_JSON_BASE64" ]; then
-            python3 -c "
-import base64, gzip, os
-raw = base64.b64decode(os.environ['AUTH_JSON_BASE64'].strip())
-if raw[:2] == b'\x1f\x8b':
-    raw = gzip.decompress(raw)
-open('auth.json', 'wb').write(raw)
-print(f'Session restored from AUTH_JSON_BASE64 ({len(raw)} bytes).')
-"
-          else
-            echo "No AUTH_JSON_BASE64 secret — trying cache."
-          fi
+      - name: Restore auth.json from secret
         env:
           AUTH_JSON_BASE64: ${{ secrets.AUTH_JSON_BASE64 }}
+        run: python3 restore_auth.py
+        continue-on-error: true
 
       - name: Restore auth from cache (fallback if secret missing)
         uses: actions/cache/restore@v4
