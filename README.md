@@ -155,7 +155,7 @@ Optional: `python shrink_auth.py` if you already have `auth.json` and only need 
 
 ### Daily schedule (7:00 Melbourne)
 
-GitHub Actions uses **UTC** cron only. The workflow runs at **`0 21 * * *` (21:00 UTC)**, which is **07:00 the next calendar day** in **Australia/Melbourne** during **AEST** (standard time, roughly April–October). During **daylight saving (AEDT)** the same cron is **08:00** Melbourne; change the cron to `0 20 * * *` if you need exactly 7:00 year-round in summer.
+GitHub Actions uses **UTC** cron only. The workflow runs at **`0 21 * * *` (21:00 UTC)** = **07:00 Australia/Melbourne** during **AEST** (standard time, roughly April–October). Each run posts the row whose column C date is **that Melbourne day** and column D is **Pending**. During **AEDT**, change the cron to `0 20 * * *` for 07:00 Melbourne.
 
 Posting rules (unchanged):
 

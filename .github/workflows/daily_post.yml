@@ -1,10 +1,11 @@
 name: Daily Blog Poster
 
-# 7:00 Australia/Melbourne (AEST, UTC+10): 21:00 UTC = 07:00 next calendar day in Melbourne.
-# During AEDT (UTC+11) the same cron runs at 08:00 Melbourne — adjust to 20:00 UTC if needed.
+# Daily 07:00 Australia/Melbourne (AEST, UTC+10): cron 21:00 UTC = 07:00 Melbourne same calendar day.
+# Posts the row whose sheet date matches that Melbourne day (column C), status Pending.
+# During AEDT (Oct–Apr): change to '0 20 * * *' for 07:00 Melbourne.
 on:
   schedule:
-    - cron: '0 21 * * *'
+    - cron: '0 21 * * *'  # 7:00 AM Melbourne (AEST)
   workflow_dispatch:
     inputs:
       test_row_limit:
