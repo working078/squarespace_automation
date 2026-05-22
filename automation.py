@@ -183,6 +183,12 @@ def is_pending_status(value):
     return s == "pending" or s.startswith("pending")
 
 
+def is_runnable_status(value):
+    """Pending = ready; Processing = retry after a failed/interrupted run."""
+    s = normalize_status(value)
+    return is_pending_status(value) or s == "processing"
+
+
 def serial_to_date(serial):
     days  = float(serial)
     whole = int(days)
@@ -290,7 +296,7 @@ def select_pending_rows(rows_with_meta):
     for offset, row, formatted_date in rows_with_meta:
         sheet_row = offset + 2
         status = row[3]
-        if not is_pending_status(status):
+        if not is_runnable_status(status):
             continue
         post_date = parse_sheet_date(row[2])
         if post_date is None and formatted_date:
@@ -308,8 +314,14 @@ def select_pending_rows(rows_with_meta):
             )
             continue
         title_preview = str(row[0])[:60]
+        status_note = (
+            " (retry Processing)"
+            if normalize_status(status) == "processing"
+            else ""
+        )
         print(
             f"Row {sheet_row}: queued — date {post_date.isoformat()}, "
+            f"status={normalize_status(status)!r}{status_note}, "
             f"title={title_preview!r}..."
         )
         pending.append((offset, row, post_date))
@@ -879,7 +891,7 @@ def run_automation():
         if os.getenv("GITHUB_ACTIONS", "").lower() in ("true", "1"):
             raise SystemExit(
                 "No Pending rows with date <= today (Melbourne). "
-                "Set column D to Pending on the sheet used by SPREADSHEET_ID."
+                "Set column D to Pending (or leave Processing to retry) on SPREADSHEET_ID."
             )
         return
 
