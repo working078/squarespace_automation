@@ -301,6 +301,8 @@ def select_pending_rows(rows_with_meta):
         post_date = parse_sheet_date(row[2])
         if post_date is None and formatted_date:
             post_date = parse_sheet_date(formatted_date)
+        if normalize_status(status) == "processing" and post_date and post_date != today:
+            continue
         if post_date is None:
             print(
                 f"Row {sheet_row}: skip — could not parse date "
@@ -334,10 +336,10 @@ def select_pending_rows(rows_with_meta):
         return today_rows
     if pending:
         print(
-            "No Pending row for today — using earlier scheduled date(s). "
-            "Add a row with today's date in column C for same-day posting."
+            f"No runnable row for today ({today.isoformat()}). "
+            f"Skipping {len(pending)} older row(s) — missed days are not auto-posted."
         )
-    return pending
+    return []
 
 
 def update_sheet_status(service, tab, row_index, status):
@@ -895,10 +897,11 @@ def run_automation():
             )
         return
 
-    if is_dry_run():
-        limit = max(1, int(os.getenv("TEST_ROW_LIMIT", "1")))
+    limit_raw = os.getenv("TEST_ROW_LIMIT", "").strip()
+    if is_dry_run() or limit_raw or os.getenv("GITHUB_ACTIONS", "").lower() in ("true", "1"):
+        limit = max(1, int(limit_raw or "1"))
         work_items = work_items[:limit]
-        print(f"DRY RUN: processing {len(work_items)} row(s) (TEST_ROW_LIMIT={limit})")
+        print(f"Processing {len(work_items)} row(s) (limit={limit})")
 
     EMAIL    = os.getenv("SQ_EMAIL")
     PASSWORD = os.getenv("SQ_PASSWORD")

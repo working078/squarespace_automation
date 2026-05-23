@@ -40,17 +40,18 @@ DEFAULT_TITLES = (
 )
 
 
+BLOG_PANEL_PATH = "/config/pages/6a0eb6e39567411b2f164a9a"
+
+
 def navigate_to_blog_posts_list(page) -> None:
     base = active_base_url()
-    print(f"Opening pages: {base}/config/pages")
-    page.goto(f"{base}/config/pages", wait_until="domcontentloaded", timeout=90000)
+    blog_url = f"{base}{BLOG_PANEL_PATH}"
+    print(f"Opening blog posts: {blog_url}")
+    page.goto(blog_url, wait_until="domcontentloaded", timeout=90000)
     time.sleep(6)
     dismiss_modal_if_open(page)
-
-    blog_nav = page.get_by_text("Blog", exact=True)
-    blog_nav.first.wait_for(state="visible", timeout=45000)
-    blog_nav.first.click()
-    time.sleep(5)
+    if "login.squarespace.com" in page.url:
+        raise RuntimeError("Not logged in — run: python generate_session.py")
     print(f"Blog panel open: {page.url}")
 
 
