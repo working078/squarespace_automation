@@ -200,7 +200,7 @@ def set_publish_date_in_editor(page, post_date: date) -> bool:
         except Exception:
             continue
 
-  # Calendar day buttons often use aria-label like "Friday, May 23, 2026"
+    # Calendar day buttons often use aria-label like "Friday, May 23, 2026"
     aria_day = post_date.strftime("%A, %B ") + f"{post_date.day}, {post_date.year}"
     day_btn = page.get_by_role("button", name=aria_day)
     if day_btn.count():
