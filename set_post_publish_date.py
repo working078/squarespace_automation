@@ -143,15 +143,17 @@ def set_publish_date_in_editor(page, post_date: date) -> bool:
     Set publish date (7.1): Options → Status → calendar → Save.
     Works from blog Settings panel or post editor (toolbar title → Options).
     """
-    dismiss_modal_if_open(page)
-    page.keyboard.press("Escape")
-    time.sleep(0.5)
+    in_post_settings = page.get_by_text(re.compile(r"Blog Post Settings", re.I)).count() > 0
+    if not in_post_settings:
+        dismiss_modal_if_open(page)
+        page.keyboard.press("Escape")
+        time.sleep(0.5)
 
     date_str = post_date.strftime("%d/%m/%Y")
     print(f"Setting publish date to {date_str} ({post_date.isoformat()})")
 
     # If we're in the editor, open post options like featured-image upload
-    if page.locator("iframe#sqs-site-frame").count():
+    if not in_post_settings and page.locator("iframe#sqs-site-frame").count():
         toolbar = page.locator('[data-test="frame-toolbar-title"]')
         if toolbar.count():
             try:
@@ -236,10 +238,10 @@ def set_publish_date_in_editor(page, post_date: date) -> bool:
         if saved:
             break
 
-    page.keyboard.press("Escape")
-    time.sleep(1)
     if not saved:
         print("WARNING: Save button not clicked — date may not have persisted.")
+    elif in_post_settings:
+        time.sleep(2)
     return saved
 
 
