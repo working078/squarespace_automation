@@ -51,37 +51,56 @@ def open_post_settings_from_list(page, title: str) -> bool:
         settings = page.get_by_text(re.compile(r"^Settings$", re.I))
     try:
         settings.first.click()
-        time.sleep(4)
+        time.sleep(6)
     except Exception as e:
         print(f"Settings menu item not found: {e}")
         page.keyboard.press("Escape")
         return False
-    # Settings panel: Options tab visible
-    options = page.get_by_role("tab", name=re.compile(r"^Options$", re.I))
-    if options.count():
-        print("Post settings panel open (Options tab).")
+    if page.get_by_text(re.compile(r"Blog Post Settings", re.I)).count():
+        print("Blog Post Settings panel open.")
         return True
     print(f"Settings panel may not have opened (url={page.url})")
-    return True
+    return False
 
 
 def _open_options_status_panel(page) -> None:
-    """Options → Status per Squarespace Help Center."""
-    for tab_name in ("Options",):
-        tab = page.get_by_role("tab", name=re.compile(tab_name, re.I))
-        if tab.count():
+    """Blog Post Settings: left nav Options → Status (Squarespace 7.1)."""
+    # Left sidebar item (not a role=tab)
+    clicked_options = False
+    for loc in (
+        page.get_by_role("button", name=re.compile(r"^Options$", re.I)),
+        page.get_by_text("Options", exact=True),
+    ):
+        for i in range(loc.count()):
             try:
-                tab.first.click()
-                time.sleep(1.5)
+                el = loc.nth(i)
+                if not el.is_visible():
+                    continue
+                box = el.bounding_box()
+                if box and box["x"] > 500:
+                    continue
+                el.click()
+                time.sleep(2)
+                clicked_options = True
+                print("Opened Options in Blog Post Settings.")
+                break
             except Exception:
-                pass
+                continue
+        if clicked_options:
+            break
+
     status = page.get_by_text(re.compile(r"^Status$", re.I))
-    if status.count():
+    for i in range(status.count()):
         try:
-            status.first.click()
+            el = status.nth(i)
+            if not el.is_visible():
+                continue
+            el.click()
             time.sleep(2)
+            print("Opened Status section.")
+            break
         except Exception:
-            pass
+            continue
 
 
 def _pick_calendar_day(page, post_date: date) -> bool:
@@ -180,15 +199,20 @@ def set_publish_date_in_editor(page, post_date: date) -> bool:
     saved = False
     for label in ("Save", "Save & Publish", "Apply", "Done"):
         btn = page.get_by_role("button", name=re.compile(f"^{label}$", re.I))
-        if btn.count():
+        for i in range(btn.count()):
             try:
-                btn.first.click(force=True)
-                time.sleep(3)
+                b = btn.nth(i)
+                if not b.is_visible():
+                    continue
+                b.click(force=True)
+                time.sleep(4)
                 print(f"Clicked {label}.")
                 saved = True
                 break
             except Exception:
                 continue
+        if saved:
+            break
 
     page.keyboard.press("Escape")
     time.sleep(1)
