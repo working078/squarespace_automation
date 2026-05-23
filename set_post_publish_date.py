@@ -117,37 +117,21 @@ def _open_options_status_panel(page) -> None:
 
 def _pick_calendar_day(page, post_date: date) -> bool:
     """Click day in Squarespace calendar widget (month may need navigation)."""
-    month_year = post_date.strftime("%B %Y")
-    # Navigate calendar to target month if header visible
-    for _ in range(6):
-        header = page.get_by_text(re.compile(r"[A-Za-z]+ \d{4}"))
-        if header.count():
-            try:
-                txt = header.first.inner_text()
-                if month_year.lower() in txt.lower():
-                    break
-                prev = page.locator('button[aria-label*="Previous"], button[aria-label*="prev"]').first
-                if prev.count() and prev.is_visible():
-                    prev.click()
-                    time.sleep(0.8)
-                    continue
-            except Exception:
-                break
-        break
-
     day = str(post_date.day)
+    # Prefer role=gridcell or button with exact day number
     for sel in (
         page.get_by_role("gridcell", name=re.compile(rf"^{day}$")),
         page.locator(f'button:has-text("{day}")'),
+        page.get_by_text(day, exact=True),
     ):
-        for i in range(min(sel.count(), 31)):
+        for i in range(min(sel.count(), 20)):
             try:
                 el = sel.nth(i)
                 if not el.is_visible():
                     continue
                 el.click()
-                time.sleep(1.5)
-                print(f"Selected calendar day {day} ({month_year}).")
+                time.sleep(1)
+                print(f"Selected calendar day {day}.")
                 return True
             except Exception:
                 continue
@@ -181,24 +165,55 @@ def set_publish_date_in_editor(page, post_date: date) -> bool:
     _open_options_status_panel(page)
 
     page.screenshot(path="fix_date_options_tab.png")
-    time.sleep(2)
 
-    # Toggle calendar: pick another day then target day so Squarespace marks the form dirty
-    other_day = post_date.day - 1 if post_date.day > 1 else post_date.day + 1
-    for d in (other_day, post_date.day):
-        aria = post_date.strftime("%A, %B ") + f"{d}, {post_date.year}"
-        btn = page.get_by_role("button", name=aria)
-        clicked = False
-        if btn.count():
+    # Open date picker: Status row / Published / existing date
+    opened_picker = False
+    for pattern in (
+        r"Date [Pp]ublished",
+        r"Publish(?:ed)? (?:on|date)",
+        r"^Published$",
+        r"\d{1,2}/\d{1,2}/\d{2,4}",
+        r"\d{1,2} \w+ \d{4}",
+        r"Today",
+        r"May \d{1,2}",
+    ):
+        el = page.get_by_text(re.compile(pattern))
+        for i in range(min(5, el.count())):
             try:
-                btn.first.click()
-                clicked = True
-                print(f"Calendar click: {aria}")
+                if not el.nth(i).is_visible():
+                    continue
+                el.nth(i).click()
+                time.sleep(1.5)
+                opened_picker = True
+                break
             except Exception:
-                pass
-        if not clicked:
-            _pick_calendar_day(page, post_date.replace(day=d))
-        time.sleep(1)
+                continue
+        if opened_picker:
+            break
+
+    if _pick_calendar_day(page, post_date):
+        opened_picker = True
+
+    if not opened_picker:
+        for inp in page.locator('input[type="text"], input[type="date"]').all():
+            try:
+                if not inp.is_visible():
+                    continue
+                aria = (inp.get_attribute("aria-label") or "").lower()
+                ph = (inp.get_attribute("placeholder") or "").lower()
+                if "date" in aria or "date" in ph or inp.get_attribute("type") == "date":
+                    inp.click()
+                    inp.fill(date_str)
+                    opened_picker = True
+                    break
+            except Exception:
+                continue
+
+    if not opened_picker:
+        page.keyboard.type(date_str, delay=40)
+    time.sleep(1)
+    page.keyboard.press("Enter")
+    time.sleep(1)
 
     saved = False
     for label in ("Save", "SAVE", "Save & Publish", "Apply", "Done"):
@@ -212,7 +227,7 @@ def set_publish_date_in_editor(page, post_date: date) -> bool:
                     if not b.is_visible():
                         continue
                     b.click(force=True)
-                    time.sleep(6)
+                    time.sleep(4)
                     print(f"Clicked {label}.")
                     saved = True
                     break
