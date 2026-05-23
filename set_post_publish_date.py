@@ -200,13 +200,29 @@ def set_publish_date_in_editor(page, post_date: date) -> bool:
         except Exception:
             continue
 
-    if not _pick_calendar_day(page, post_date):
+  # Calendar day buttons often use aria-label like "Friday, May 23, 2026"
+    aria_day = post_date.strftime("%A, %B ") + f"{post_date.day}, {post_date.year}"
+    day_btn = page.get_by_role("button", name=aria_day)
+    if day_btn.count():
+        try:
+            day_btn.first.click()
+            time.sleep(1.5)
+            print(f"Selected calendar via aria-label: {aria_day}")
+        except Exception:
+            pass
+    elif not _pick_calendar_day(page, post_date):
         print("WARNING: could not select day on calendar.")
 
     time.sleep(1)
-    # Save is above the calendar — scroll modal to top
-    page.keyboard.press("Home")
-    time.sleep(0.5)
+    # Save lives on Options panel — go back from Status sub-screen first
+    back = page.get_by_text(re.compile(r"^\s*BACK\s*$", re.I))
+    if back.count():
+        try:
+            back.first.click()
+            time.sleep(2)
+            print("Clicked BACK to Options panel.")
+        except Exception:
+            pass
 
     saved = False
     for label in ("Save", "SAVE"):
