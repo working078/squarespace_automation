@@ -213,16 +213,19 @@ def set_publish_date_in_editor(page, post_date: date) -> bool:
     elif not _pick_calendar_day(page, post_date):
         print("WARNING: could not select day on calendar.")
 
+    # Force a change: pick adjacent day then target day (Squarespace only saves if dirty)
+    other_day = post_date.day - 1 if post_date.day > 1 else post_date.day + 1
+    for d in (other_day, post_date.day):
+        aria = post_date.strftime("%A, %B ") + f"{d}, {post_date.year}"
+        btn = page.get_by_role("button", name=aria)
+        if btn.count():
+            try:
+                btn.first.click()
+                time.sleep(0.8)
+            except Exception:
+                pass
+
     time.sleep(1)
-    # Save lives on Options panel — go back from Status sub-screen first
-    back = page.get_by_text(re.compile(r"^\s*BACK\s*$", re.I))
-    if back.count():
-        try:
-            back.first.click()
-            time.sleep(2)
-            print("Clicked BACK to Options panel.")
-        except Exception:
-            pass
 
     saved = False
     for label in ("Save", "SAVE"):
