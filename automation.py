@@ -996,9 +996,12 @@ def run_automation():
                     if img_path and os.path.exists(img_path):
                         upload_featured_image_via_post_settings(page, img_path)
 
+                    published_via_date = False
                     if not is_dry_run():
                         from set_post_publish_date import set_publish_date_in_editor
-                        set_publish_date_in_editor(page, post_date)
+                        published_via_date = set_publish_date_in_editor(
+                            page, post_date, before_publish=True
+                        )
 
                     if is_dry_run():
                         page.screenshot(path=_test_output_path(f"row_{sheet_row}_dry_run_editor.png"))
@@ -1006,7 +1009,7 @@ def run_automation():
                             f"DRY RUN: editor filled for row {sheet_row} — "
                             "publish skipped; sheet status unchanged."
                         )
-                    else:
+                    elif not published_via_date:
                         run_publish_confirmation_flow(page)
                         update_sheet_status(service, tab, offset, "Posted")
                         print(f"✅  Row {sheet_row} — post '{title}' published successfully.")

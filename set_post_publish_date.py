@@ -138,7 +138,7 @@ def _pick_calendar_day(page, post_date: date) -> bool:
     return False
 
 
-def set_publish_date_in_editor(page, post_date: date) -> bool:
+def set_publish_date_in_editor(page, post_date: date, *, before_publish: bool = False) -> bool:
     """
     Set publish date (7.1): Options → Status → calendar → Save.
     Works from blog Settings panel or post editor (toolbar title → Options).
@@ -215,8 +215,14 @@ def set_publish_date_in_editor(page, post_date: date) -> bool:
     page.keyboard.press("Enter")
     time.sleep(1)
 
+    save_labels = (
+        ("Save & Publish", "Save", "SAVE")
+        if before_publish
+        else ("Save & Publish", "Save", "SAVE", "Apply", "Done")
+    )
     saved = False
-    for label in ("Save", "SAVE", "Save & Publish", "Apply", "Done"):
+    used_save_and_publish = False
+    for label in save_labels:
         for loc in (
             page.get_by_role("button", name=re.compile(f"^{label}$", re.I)),
             page.locator(f'button:has-text("{label}")'),
@@ -230,6 +236,7 @@ def set_publish_date_in_editor(page, post_date: date) -> bool:
                     time.sleep(4)
                     print(f"Clicked {label}.")
                     saved = True
+                    used_save_and_publish = "publish" in label.lower()
                     break
                 except Exception:
                     continue
@@ -242,6 +249,8 @@ def set_publish_date_in_editor(page, post_date: date) -> bool:
         print("WARNING: Save button not clicked — date may not have persisted.")
     elif in_post_settings:
         time.sleep(2)
+    if before_publish and used_save_and_publish:
+        return True
     return saved
 
 
