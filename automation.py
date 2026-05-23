@@ -999,9 +999,22 @@ def run_automation():
                     published_via_date = False
                     if not is_dry_run():
                         from set_post_publish_date import set_publish_date_in_editor
-                        published_via_date = set_publish_date_in_editor(
-                            page, post_date, before_publish=True
-                        )
+
+                        today = today_local()
+                        if post_date < today:
+                            # Prefer Save & Publish with sheet date; else publish now + fix date workflow
+                            published_via_date = set_publish_date_in_editor(
+                                page, post_date, before_publish=True
+                            )
+                            if not published_via_date:
+                                print(
+                                    f"Row {sheet_row}: Save & Publish not available in editor — "
+                                    f"will publish now; run fix_publish_date for {post_date.isoformat()}."
+                                )
+                        elif post_date == today:
+                            published_via_date = set_publish_date_in_editor(
+                                page, post_date, before_publish=True
+                            )
 
                     if is_dry_run():
                         page.screenshot(path=_test_output_path(f"row_{sheet_row}_dry_run_editor.png"))

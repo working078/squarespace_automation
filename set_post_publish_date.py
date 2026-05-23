@@ -191,32 +191,25 @@ def set_publish_date_in_editor(page, post_date: date, *, before_publish: bool = 
         if opened_picker:
             break
 
-    if _pick_calendar_day(page, post_date):
-        opened_picker = True
-
-    if not opened_picker:
-        for inp in page.locator('input[type="text"], input[type="date"]').all():
+    # Calendar: aria-label e.g. "Friday, May 23, 2026" (toggle day so Squarespace marks dirty)
+    other_day = post_date.day - 1 if post_date.day > 1 else post_date.day + 1
+    for d in (other_day, post_date.day):
+        aria = post_date.strftime("%A, %B ") + f"{d}, {post_date.year}"
+        btn = page.get_by_role("button", name=aria)
+        if btn.count():
             try:
-                if not inp.is_visible():
-                    continue
-                aria = (inp.get_attribute("aria-label") or "").lower()
-                ph = (inp.get_attribute("placeholder") or "").lower()
-                if "date" in aria or "date" in ph or inp.get_attribute("type") == "date":
-                    inp.click()
-                    inp.fill(date_str)
-                    opened_picker = True
-                    break
+                btn.first.click()
+                time.sleep(1)
+                print(f"Calendar: {aria}")
             except Exception:
-                continue
+                pass
+        else:
+            _pick_calendar_day(page, post_date.replace(day=d))
 
-    if not opened_picker:
-        page.keyboard.type(date_str, delay=40)
-    time.sleep(1)
-    page.keyboard.press("Enter")
     time.sleep(1)
 
     save_labels = (
-        ("Save & Publish", "Save", "SAVE")
+        ("Save & Publish",)
         if before_publish
         else ("Save & Publish", "Save", "SAVE", "Apply", "Done")
     )
@@ -246,12 +239,13 @@ def set_publish_date_in_editor(page, post_date: date, *, before_publish: bool = 
             break
 
     if not saved:
-        print("WARNING: Save button not clicked — date may not have persisted.")
+        if before_publish:
+            print("ERROR: Save & Publish not found — post not published (avoids wrong date).")
+        else:
+            print("WARNING: Save / Save & Publish not clicked — date may not have persisted.")
     elif in_post_settings:
         time.sleep(2)
-    if before_publish and used_save_and_publish:
-        return True
-    return saved
+    return used_save_and_publish
 
 
 def main() -> int:

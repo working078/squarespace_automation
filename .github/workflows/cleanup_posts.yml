@@ -46,6 +46,9 @@ jobs:
             python delete_test_posts.py --title "How IBC Transport Between Melbourne and Mansfield Usually Works" || true
           done
 
-      - name: Delete one Beechworth duplicate
+      - name: Delete Beechworth post(s)
         if: inputs.delete_beechworth_dupes
-        run: python delete_test_posts.py --title "The Best Way to Transport Steel and Building Products to Beechworth" || true
+        run: |
+          for i in 1 2 3 4 5; do
+            python delete_test_posts.py --title "The Best Way to Transport Steel and Building Products to Beechworth" || true
+          done
