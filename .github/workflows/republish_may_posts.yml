@@ -54,11 +54,12 @@ jobs:
           DRY_RUN: ""
         run: python automation.py
 
-      - name: Backdate Mansfield to 23 May (Settings → Save & Publish)
+      - name: Backdate Mansfield to 23 May (Settings → Status → Save)
         run: |
           python set_post_publish_date.py \
             --title "How IBC Transport Between Melbourne and Mansfield Usually Works" \
             --date "23/05/26"
+        continue-on-error: true
 
       - name: Publish row 12 — Beechworth (sheet date 24 May)
         env:

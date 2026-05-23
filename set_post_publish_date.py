@@ -245,7 +245,10 @@ def set_publish_date_in_editor(page, post_date: date, *, before_publish: bool = 
             print("WARNING: Save / Save & Publish not clicked — date may not have persisted.")
     elif in_post_settings:
         time.sleep(2)
-    return used_save_and_publish
+    if before_publish:
+        return used_save_and_publish
+  # Existing published post: Settings panel only offers Save (not Save & Publish)
+    return saved
 
 
 def main() -> int:
