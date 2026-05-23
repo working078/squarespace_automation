@@ -181,54 +181,27 @@ def set_publish_date_in_editor(page, post_date: date) -> bool:
     _open_options_status_panel(page)
 
     page.screenshot(path="fix_date_options_tab.png")
+    time.sleep(2)
 
-    # Click bold date under PUBLISHED (opens calendar)
-    published_date = page.get_by_text(
-        re.compile(
-            r"[A-Z][a-z]+ \d{1,2}, \d{4}, \d{1,2}:\d{2} [AP]M",
-            re.I,
-        )
-    )
-    for i in range(min(3, published_date.count())):
-        try:
-            el = published_date.nth(i)
-            if el.is_visible():
-                el.click()
-                time.sleep(1.5)
-                print("Opened published date picker.")
-                break
-        except Exception:
-            continue
-
-    # Calendar day buttons often use aria-label like "Friday, May 23, 2026"
-    aria_day = post_date.strftime("%A, %B ") + f"{post_date.day}, {post_date.year}"
-    day_btn = page.get_by_role("button", name=aria_day)
-    if day_btn.count():
-        try:
-            day_btn.first.click()
-            time.sleep(1.5)
-            print(f"Selected calendar via aria-label: {aria_day}")
-        except Exception:
-            pass
-    elif not _pick_calendar_day(page, post_date):
-        print("WARNING: could not select day on calendar.")
-
-    # Force a change: pick adjacent day then target day (Squarespace only saves if dirty)
+    # Toggle calendar: pick another day then target day so Squarespace marks the form dirty
     other_day = post_date.day - 1 if post_date.day > 1 else post_date.day + 1
     for d in (other_day, post_date.day):
         aria = post_date.strftime("%A, %B ") + f"{d}, {post_date.year}"
         btn = page.get_by_role("button", name=aria)
+        clicked = False
         if btn.count():
             try:
                 btn.first.click()
-                time.sleep(0.8)
+                clicked = True
+                print(f"Calendar click: {aria}")
             except Exception:
                 pass
-
-    time.sleep(1)
+        if not clicked:
+            _pick_calendar_day(page, post_date.replace(day=d))
+        time.sleep(1)
 
     saved = False
-    for label in ("Save", "SAVE"):
+    for label in ("Save", "SAVE", "Save & Publish", "Apply", "Done"):
         for loc in (
             page.get_by_role("button", name=re.compile(f"^{label}$", re.I)),
             page.locator(f'button:has-text("{label}")'),
@@ -238,7 +211,6 @@ def set_publish_date_in_editor(page, post_date: date) -> bool:
                     b = loc.nth(i)
                     if not b.is_visible():
                         continue
-                    b.scroll_into_view_if_needed()
                     b.click(force=True)
                     time.sleep(6)
                     print(f"Clicked {label}.")
