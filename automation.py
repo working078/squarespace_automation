@@ -996,6 +996,10 @@ def run_automation():
                     if img_path and os.path.exists(img_path):
                         upload_featured_image_via_post_settings(page, img_path)
 
+                    if not is_dry_run():
+                        from set_post_publish_date import set_publish_date_in_editor
+                        set_publish_date_in_editor(page, post_date)
+
                     if is_dry_run():
                         page.screenshot(path=_test_output_path(f"row_{sheet_row}_dry_run_editor.png"))
                         print(
