@@ -1011,10 +1011,7 @@ def run_automation():
                                     f"Row {sheet_row}: Save & Publish not available in editor — "
                                     f"will publish now; run fix_publish_date for {post_date.isoformat()}."
                                 )
-                        elif post_date == today:
-                            published_via_date = set_publish_date_in_editor(
-                                page, post_date, before_publish=True
-                            )
+                        # Today's row: Publish Now is fine (stamp will match sheet date)
 
                     if is_dry_run():
                         page.screenshot(path=_test_output_path(f"row_{sheet_row}_dry_run_editor.png"))
