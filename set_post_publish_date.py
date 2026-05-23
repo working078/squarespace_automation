@@ -117,21 +117,37 @@ def _open_options_status_panel(page) -> None:
 
 def _pick_calendar_day(page, post_date: date) -> bool:
     """Click day in Squarespace calendar widget (month may need navigation)."""
+    month_year = post_date.strftime("%B %Y")
+    # Navigate calendar to target month if header visible
+    for _ in range(6):
+        header = page.get_by_text(re.compile(r"[A-Za-z]+ \d{4}"))
+        if header.count():
+            try:
+                txt = header.first.inner_text()
+                if month_year.lower() in txt.lower():
+                    break
+                prev = page.locator('button[aria-label*="Previous"], button[aria-label*="prev"]').first
+                if prev.count() and prev.is_visible():
+                    prev.click()
+                    time.sleep(0.8)
+                    continue
+            except Exception:
+                break
+        break
+
     day = str(post_date.day)
-    # Prefer role=gridcell or button with exact day number
     for sel in (
         page.get_by_role("gridcell", name=re.compile(rf"^{day}$")),
         page.locator(f'button:has-text("{day}")'),
-        page.get_by_text(day, exact=True),
     ):
-        for i in range(min(sel.count(), 20)):
+        for i in range(min(sel.count(), 31)):
             try:
                 el = sel.nth(i)
                 if not el.is_visible():
                     continue
                 el.click()
-                time.sleep(1)
-                print(f"Selected calendar day {day}.")
+                time.sleep(1.5)
+                print(f"Selected calendar day {day} ({month_year}).")
                 return True
             except Exception:
                 continue
@@ -190,6 +206,20 @@ def set_publish_date_in_editor(page, post_date: date) -> bool:
                 continue
         if opened_picker:
             break
+
+    # Open PUBLISHED date row (May 23, 2026, 10:12 PM) in Status panel
+    published_row = page.get_by_text(
+        re.compile(r"(Published on|May \d{1,2}, \d{4}|\d{1,2}/\d{1,2}/\d{4}).*\d{1,2}:\d{2}")
+    )
+    for i in range(min(3, published_row.count())):
+        try:
+            if published_row.nth(i).is_visible():
+                published_row.nth(i).click()
+                time.sleep(1.5)
+                opened_picker = True
+                break
+        except Exception:
+            continue
 
     if _pick_calendar_day(page, post_date):
         opened_picker = True
