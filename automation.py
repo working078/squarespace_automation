@@ -887,6 +887,21 @@ def run_automation():
     rows_with_meta = fetch_sheet_rows(service, tab)
     work_items     = select_pending_rows(rows_with_meta)
 
+    force_row = os.getenv("FORCE_SHEET_ROW", "").strip()
+    if force_row.isdigit():
+        target = int(force_row)
+        forced = []
+        for offset, row, formatted_date in rows_with_meta:
+            if offset + 2 != target:
+                continue
+            post_date = parse_sheet_date(row[2]) or parse_sheet_date(formatted_date)
+            if post_date is None:
+                break
+            forced.append((offset, row, post_date))
+            print(f"FORCE_SHEET_ROW={target} — publishing row {target} only (sheet date {post_date}).")
+            break
+        work_items = forced
+
     if not work_items:
         dump_row_diagnostics(rows_with_meta)
         print("No pending posts found for today or earlier. Exiting.")

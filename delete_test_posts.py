@@ -55,9 +55,18 @@ def navigate_to_blog_posts_list(page) -> None:
     print(f"Blog panel open: {page.url}")
 
 
+def _title_locator(page, title: str):
+    """Match post title in admin list (substring; UI may truncate long titles)."""
+    short = title[:55] if len(title) > 55 else title
+    loc = page.get_by_text(short, exact=False)
+    if loc.count() == 0:
+        loc = page.get_by_text(title, exact=False)
+    return loc.first
+
+
 def _item_options_button(page, title: str):
     """Squarespace 7.1 blog list: each row has button aria-label 'Item options'."""
-    title_loc = page.get_by_text(title, exact=True).first
+    title_loc = _title_locator(page, title)
     row = title_loc.locator(
         'xpath=ancestor::div[.//button[@aria-label="Item options"]][1]'
     )
@@ -70,7 +79,7 @@ def delete_post_by_title(page, title: str) -> bool:
     dismiss_modal_if_open(page)
 
     try:
-        page.get_by_text(title, exact=True).first.wait_for(state="visible", timeout=15000)
+        _title_locator(page, title).wait_for(state="visible", timeout=15000)
     except Exception:
         print("  Not found — skip.")
         return False

@@ -12,6 +12,10 @@ on:
         description: 'Max posts this run (use 1 for a smoke test; leave empty for all due rows)'
         required: false
         default: ''
+      force_sheet_row:
+        description: 'Optional sheet row number to publish (e.g. 11 for 23 May) — manual recovery only'
+        required: false
+        default: ''
 
 jobs:
   post:
@@ -62,6 +66,7 @@ jobs:
           POLLINATIONS_API_KEY: ${{ secrets.POLLINATIONS_AI }}
           HEADLESS:             "true"
           TEST_ROW_LIMIT:       ${{ github.event.inputs.test_row_limit }}
+          FORCE_SHEET_ROW:      ${{ github.event.inputs.force_sheet_row }}
           GITHUB_ACTIONS:       "true"
           # Production only — never set DRY_RUN or test SPREADSHEET_ID/BASE_URL here.
           DRY_RUN:              ""
