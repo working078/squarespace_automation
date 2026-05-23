@@ -182,71 +182,34 @@ def set_publish_date_in_editor(page, post_date: date) -> bool:
 
     page.screenshot(path="fix_date_options_tab.png")
 
-    # Open date picker: Status row / Published / existing date
-    opened_picker = False
-    for pattern in (
-        r"Date [Pp]ublished",
-        r"Publish(?:ed)? (?:on|date)",
-        r"^Published$",
-        r"\d{1,2}/\d{1,2}/\d{2,4}",
-        r"\d{1,2} \w+ \d{4}",
-        r"Today",
-        r"May \d{1,2}",
-    ):
-        el = page.get_by_text(re.compile(pattern))
-        for i in range(min(5, el.count())):
-            try:
-                if not el.nth(i).is_visible():
-                    continue
-                el.nth(i).click()
-                time.sleep(1.5)
-                opened_picker = True
-                break
-            except Exception:
-                continue
-        if opened_picker:
-            break
-
-    # Open PUBLISHED date row (May 23, 2026, 10:12 PM) in Status panel
-    published_row = page.get_by_text(
-        re.compile(r"(Published on|May \d{1,2}, \d{4}|\d{1,2}/\d{1,2}/\d{4}).*\d{1,2}:\d{2}")
+    # Click bold date under PUBLISHED (opens calendar)
+    published_date = page.get_by_text(
+        re.compile(
+            r"[A-Z][a-z]+ \d{1,2}, \d{4}, \d{1,2}:\d{2} [AP]M",
+            re.I,
+        )
     )
-    for i in range(min(3, published_row.count())):
+    for i in range(min(3, published_date.count())):
         try:
-            if published_row.nth(i).is_visible():
-                published_row.nth(i).click()
+            el = published_date.nth(i)
+            if el.is_visible():
+                el.click()
                 time.sleep(1.5)
-                opened_picker = True
+                print("Opened published date picker.")
                 break
         except Exception:
             continue
 
-    if _pick_calendar_day(page, post_date):
-        opened_picker = True
+    if not _pick_calendar_day(page, post_date):
+        print("WARNING: could not select day on calendar.")
 
-    if not opened_picker:
-        for inp in page.locator('input[type="text"], input[type="date"]').all():
-            try:
-                if not inp.is_visible():
-                    continue
-                aria = (inp.get_attribute("aria-label") or "").lower()
-                ph = (inp.get_attribute("placeholder") or "").lower()
-                if "date" in aria or "date" in ph or inp.get_attribute("type") == "date":
-                    inp.click()
-                    inp.fill(date_str)
-                    opened_picker = True
-                    break
-            except Exception:
-                continue
-
-    if not opened_picker:
-        page.keyboard.type(date_str, delay=40)
     time.sleep(1)
-    page.keyboard.press("Enter")
-    time.sleep(1)
+    # Save is above the calendar — scroll modal to top
+    page.keyboard.press("Home")
+    time.sleep(0.5)
 
     saved = False
-    for label in ("Save", "SAVE", "Save & Publish", "Apply", "Done"):
+    for label in ("Save", "SAVE"):
         for loc in (
             page.get_by_role("button", name=re.compile(f"^{label}$", re.I)),
             page.locator(f'button:has-text("{label}")'),
@@ -256,8 +219,9 @@ def set_publish_date_in_editor(page, post_date: date) -> bool:
                     b = loc.nth(i)
                     if not b.is_visible():
                         continue
+                    b.scroll_into_view_if_needed()
                     b.click(force=True)
-                    time.sleep(4)
+                    time.sleep(6)
                     print(f"Clicked {label}.")
                     saved = True
                     break
