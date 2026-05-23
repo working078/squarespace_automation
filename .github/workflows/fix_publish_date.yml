@@ -39,3 +39,12 @@ jobs:
           python set_post_publish_date.py \
             --title "${{ inputs.post_title }}" \
             --date "${{ inputs.publish_date }}"
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fix-publish-date-screenshots
+          path: |
+            fix_date_*.png
+          if-no-files-found: ignore
