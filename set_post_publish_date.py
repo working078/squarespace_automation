@@ -65,29 +65,41 @@ def open_post_settings_from_list(page, title: str) -> bool:
 
 def _open_options_status_panel(page) -> None:
     """Blog Post Settings: left nav Options → Status (Squarespace 7.1)."""
-    # Left sidebar item (not a role=tab)
     clicked_options = False
-    for loc in (
-        page.get_by_role("button", name=re.compile(r"^Options$", re.I)),
-        page.get_by_text("Options", exact=True),
-    ):
-        for i in range(loc.count()):
+    modal = (
+        page.get_by_role("dialog")
+        .filter(has_text=re.compile(r"Blog Post Settings", re.I))
+        .or_(page.locator("div").filter(has_text=re.compile(r"Blog Post Settings", re.I)))
+    )
+    if modal.count():
+        opts = modal.first.get_by_text("Options", exact=True)
+        if opts.count():
             try:
-                el = loc.nth(i)
+                opts.first.click()
+                time.sleep(2)
+                clicked_options = True
+                print("Opened Options (scoped to settings modal).")
+            except Exception as e:
+                print(f"Options click in modal failed: {e}")
+
+    if not clicked_options:
+        # Fallback: Options sits directly under Content in the left nav
+        content = page.get_by_text("Content", exact=True)
+        for i in range(content.count()):
+            try:
+                el = content.nth(i)
                 if not el.is_visible():
                     continue
                 box = el.bounding_box()
-                if box and box["x"] > 500:
+                if not box or box["x"] > 400 or box["y"] < 80:
                     continue
-                el.click()
+                page.mouse.click(box["x"] + 30, box["y"] + 48)
                 time.sleep(2)
                 clicked_options = True
-                print("Opened Options in Blog Post Settings.")
+                print("Opened Options via click below Content nav item.")
                 break
             except Exception:
                 continue
-        if clicked_options:
-            break
 
     status = page.get_by_text(re.compile(r"^Status$", re.I))
     for i in range(status.count()):
@@ -150,13 +162,18 @@ def set_publish_date_in_editor(page, post_date: date) -> bool:
 
     _open_options_status_panel(page)
 
+    page.screenshot(path="fix_date_options_tab.png")
+
     # Open date picker: Status row / Published / existing date
     opened_picker = False
     for pattern in (
         r"Date [Pp]ublished",
+        r"Publish(?:ed)? (?:on|date)",
         r"^Published$",
         r"\d{1,2}/\d{1,2}/\d{2,4}",
         r"\d{1,2} \w+ \d{4}",
+        r"Today",
+        r"May \d{1,2}",
     ):
         el = page.get_by_text(re.compile(pattern))
         for i in range(min(5, el.count())):
@@ -197,20 +214,25 @@ def set_publish_date_in_editor(page, post_date: date) -> bool:
     time.sleep(1)
 
     saved = False
-    for label in ("Save", "Save & Publish", "Apply", "Done"):
-        btn = page.get_by_role("button", name=re.compile(f"^{label}$", re.I))
-        for i in range(btn.count()):
-            try:
-                b = btn.nth(i)
-                if not b.is_visible():
+    for label in ("Save", "SAVE", "Save & Publish", "Apply", "Done"):
+        for loc in (
+            page.get_by_role("button", name=re.compile(f"^{label}$", re.I)),
+            page.locator(f'button:has-text("{label}")'),
+        ):
+            for i in range(loc.count()):
+                try:
+                    b = loc.nth(i)
+                    if not b.is_visible():
+                        continue
+                    b.click(force=True)
+                    time.sleep(4)
+                    print(f"Clicked {label}.")
+                    saved = True
+                    break
+                except Exception:
                     continue
-                b.click(force=True)
-                time.sleep(4)
-                print(f"Clicked {label}.")
-                saved = True
+            if saved:
                 break
-            except Exception:
-                continue
         if saved:
             break
 

@@ -45,6 +45,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: fix-publish-date-screenshots
-          path: |
-            fix_date_*.png
+          path: fix_date_*.png
           if-no-files-found: ignore
