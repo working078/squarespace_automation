@@ -23,6 +23,8 @@ def apply_stealth(page):
 # ---------------------------------------------------------------------------
 PRODUCTION_SPREADSHEET_ID = "18c9Ly0omriZ6hUUQQVPs4kRx7j_j46tavLtXHdG2jts"
 PRODUCTION_BASE_URL       = "https://coconut-radish-an89.squarespace.com"
+# Public blog listing (not /blog — that URL 404s on this site)
+PUBLIC_BLOG_URL           = "https://www.triberural.com.au/news-and-updates"
 SCOPES                    = ["https://www.googleapis.com/auth/spreadsheets"]
 
 BOOKING_LINK    = "https://forms.clickup.com/90161562352/f/2kz0rgqg-676/WM5FMNFXZQWBKHRIBF"
@@ -522,9 +524,19 @@ def navigate_to_blog_composer(page):
     page.goto(f"{base}/config/pages", wait_until="domcontentloaded", timeout=90000)
     time.sleep(6)
 
-    blog_nav = page.get_by_text("Blog", exact=True)
-    blog_nav.first.wait_for(state="visible", timeout=45000)
-    blog_nav.first.click()
+    opened = False
+    for label in ("News and Updates", "Blog"):
+        blog_nav = page.get_by_text(label, exact=True)
+        if blog_nav.count():
+            blog_nav.first.wait_for(state="visible", timeout=45000)
+            blog_nav.first.click()
+            print(f"Opened blog page in admin: {label!r}")
+            opened = True
+            break
+    if not opened:
+        raise RuntimeError(
+            "Could not find blog page in Pages panel (look for 'News and Updates' or 'Blog')."
+        )
     time.sleep(5)
 
     add_post = page.locator('[aria-label="Add blog post"]').first
