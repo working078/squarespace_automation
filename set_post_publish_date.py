@@ -247,7 +247,7 @@ def set_publish_date_in_editor(page, post_date: date, *, before_publish: bool = 
         time.sleep(2)
     if before_publish:
         return used_save_and_publish
-  # Existing published post: Settings panel only offers Save (not Save & Publish)
+    # Existing published post: Settings panel only offers Save (not Save & Publish)
     return saved
 
 

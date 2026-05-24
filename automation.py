@@ -290,56 +290,62 @@ def dump_row_diagnostics(rows_with_meta):
 
 
 def select_pending_rows(rows_with_meta):
+    """
+    Daily production rule: only rows where column C = today (Melbourne) and column D allows run.
+    Older Pending rows are never auto-posted (missed days stay manual).
+    """
     today = today_local()
+    scheduled = os.getenv("SCHEDULED_RUN", "").strip().lower() in ("1", "true", "yes")
     print(f"Today (Australia/Melbourne): {today.isoformat()}")
-    pending = []
+    if scheduled:
+        print("Scheduled daily run — will post at most one row: date=today, status=Pending.")
+
+    today_rows = []
     for offset, row, formatted_date in rows_with_meta:
         sheet_row = offset + 2
         status = row[3]
-        if not is_runnable_status(status):
-            continue
         post_date = parse_sheet_date(row[2])
         if post_date is None and formatted_date:
             post_date = parse_sheet_date(formatted_date)
-        if normalize_status(status) == "processing" and post_date and post_date != today:
-            continue
+
         if post_date is None:
-            print(
-                f"Row {sheet_row}: skip — could not parse date "
-                f"raw={row[2]!r} formatted={formatted_date!r} status={status!r}"
-            )
             continue
         if post_date > today:
-            print(
-                f"Row {sheet_row}: skip — scheduled {post_date.isoformat()} "
-                f"is after today {today.isoformat()}"
-            )
             continue
-        title_preview = str(row[0])[:60]
-        status_note = (
-            " (retry Processing)"
-            if normalize_status(status) == "processing"
-            else ""
-        )
-        print(
-            f"Row {sheet_row}: queued — date {post_date.isoformat()}, "
-            f"status={normalize_status(status)!r}{status_note}, "
-            f"title={title_preview!r}..."
-        )
-        pending.append((offset, row, post_date))
+        if post_date < today:
+            if is_pending_status(status) or normalize_status(status) == "processing":
+                print(
+                    f"Row {sheet_row}: skip — date {post_date.isoformat()} is before today; "
+                    "missed days are not auto-posted."
+                )
+            continue
 
-    today_rows = [item for item in pending if item[2] == today]
+        # post_date == today
+        if scheduled:
+            if not is_pending_status(status):
+                if normalize_status(status) not in ("posted", ""):
+                    print(
+                        f"Row {sheet_row}: skip — status {status!r} "
+                        f"(scheduled run requires Pending for today)."
+                    )
+                continue
+        elif not is_runnable_status(status):
+            continue
+        elif normalize_status(status) == "processing" and post_date != today:
+            continue
+
+        title_preview = str(row[0])[:60]
+        print(
+            f"Row {sheet_row}: selected — sheet date {post_date.isoformat()} = today, "
+            f"status={normalize_status(status)!r}, title={title_preview!r}..."
+        )
+        today_rows.append((offset, row, post_date))
+
     if today_rows:
-        print(
-            f"Using {len(today_rows)} row(s) with sheet date = today ({today.isoformat()})"
-        )
-        return today_rows
-    if pending:
-        print(
-            f"No runnable row for today ({today.isoformat()}). "
-            f"Skipping {len(pending)} older row(s) — missed days are not auto-posted."
-        )
-    return []
+        print(f"Will publish {len(today_rows)} row(s) for {today.isoformat()}.")
+    else:
+        print(f"No Pending row with sheet date = today ({today.isoformat()}).")
+    return today_rows
 
 
 def update_sheet_status(service, tab, row_index, status):
@@ -888,6 +894,8 @@ def run_automation():
     work_items     = select_pending_rows(rows_with_meta)
 
     force_row = os.getenv("FORCE_SHEET_ROW", "").strip()
+    if os.getenv("SCHEDULED_RUN", "").strip().lower() in ("1", "true", "yes"):
+        force_row = ""
     if force_row.isdigit():
         target = int(force_row)
         forced = []
@@ -904,11 +912,11 @@ def run_automation():
 
     if not work_items:
         dump_row_diagnostics(rows_with_meta)
-        print("No pending posts found for today or earlier. Exiting.")
+        print("No post to publish for today. Exiting.")
         if os.getenv("GITHUB_ACTIONS", "").lower() in ("true", "1"):
             raise SystemExit(
-                "No Pending rows with date <= today (Melbourne). "
-                "Set column D to Pending (or leave Processing to retry) on SPREADSHEET_ID."
+                f"No Pending row with sheet date = today ({today_local().isoformat()}, "
+                "Australia/Melbourne). Set column D to Pending for that row."
             )
         return
 
