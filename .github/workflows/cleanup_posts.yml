@@ -1,0 +1,54 @@
+name: Cleanup Blog Posts
+
+on:
+  workflow_dispatch:
+    inputs:
+      delete_mansfield_ibc:
+        description: 'Delete all Mansfield IBC posts (then republish row 11 separately)'
+        type: boolean
+        default: true
+      delete_beechworth_dupes:
+        description: 'Delete one duplicate Beechworth post if present'
+        type: boolean
+        default: true
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Restore auth.json
+        env:
+          AUTH_JSON_BASE64: ${{ secrets.AUTH_JSON_BASE64 }}
+        run: python3 restore_auth.py
+        continue-on-error: true
+
+      - uses: actions/cache/restore@v4
+        with:
+          path: auth.json
+          key: squarespace-auth-session
+          restore-keys: squarespace-auth-session
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium --with-deps
+
+      - name: Delete Mansfield IBC duplicates
+        if: inputs.delete_mansfield_ibc
+        run: |
+          for i in 1 2 3 4 5; do
+            python delete_test_posts.py --title "How IBC Transport Between Melbourne and Mansfield Usually Works" || true
+          done
+
+      - name: Delete Beechworth post(s)
+        if: inputs.delete_beechworth_dupes
+        run: |
+          for i in 1 2 3 4 5; do
+            python delete_test_posts.py --title "The Best Way to Transport Steel and Building Products to Beechworth" || true
+          done

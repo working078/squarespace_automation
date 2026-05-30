@@ -1,0 +1,76 @@
+# One-time recovery: delete Mansfield (23 May) + Beechworth (24 May) and repost with correct dates.
+name: Republish May 23 and 24 Posts
+
+on:
+  workflow_dispatch:
+
+jobs:
+  republish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Restore auth.json
+        env:
+          AUTH_JSON_BASE64: ${{ secrets.AUTH_JSON_BASE64 }}
+        run: python3 restore_auth.py
+        continue-on-error: true
+
+      - uses: actions/cache/restore@v4
+        with:
+          path: auth.json
+          key: squarespace-auth-session
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium --with-deps
+
+      - name: Delete both posts (all copies)
+        run: |
+          for title in \
+            "How IBC Transport Between Melbourne and Mansfield Usually Works" \
+            "The Best Way to Transport Steel and Building Products to Beechworth"; do
+            for i in 1 2 3 4 5; do
+              python delete_test_posts.py --title "$title" || true
+            done
+          done
+
+      - name: Publish row 11 — Mansfield IBC (sheet date 23 May)
+        env:
+          SQ_EMAIL: ${{ secrets.SQ_EMAIL }}
+          SQ_PASSWORD: ${{ secrets.SQ_PASSWORD }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          POLLINATIONS_API_KEY: ${{ secrets.POLLINATIONS_AI }}
+          HEADLESS: "true"
+          TEST_ROW_LIMIT: "1"
+          FORCE_SHEET_ROW: "11"
+          GITHUB_ACTIONS: "true"
+          DRY_RUN: ""
+        run: python automation.py
+
+      - name: Backdate Mansfield to 23 May (Settings → Status → Save)
+        run: |
+          python set_post_publish_date.py \
+            --title "How IBC Transport Between Melbourne and Mansfield Usually Works" \
+            --date "23/05/26"
+        continue-on-error: true
+
+      - name: Publish row 12 — Beechworth (sheet date 24 May)
+        env:
+          SQ_EMAIL: ${{ secrets.SQ_EMAIL }}
+          SQ_PASSWORD: ${{ secrets.SQ_PASSWORD }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          POLLINATIONS_API_KEY: ${{ secrets.POLLINATIONS_AI }}
+          HEADLESS: "true"
+          TEST_ROW_LIMIT: "1"
+          FORCE_SHEET_ROW: "12"
+          GITHUB_ACTIONS: "true"
+          DRY_RUN: ""
+        run: python automation.py

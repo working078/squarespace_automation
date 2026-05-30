@@ -4,6 +4,9 @@ Automated blog publishing for **[Tribe Rural Logistics](https://coconut-radish-a
 
 Design inspiration for layout and tone: [Metro Express blog](https://www.metroexpress.com.au/blog/).
 
+**View the live blog (public):** [https://www.triberural.com.au/news-and-updates](https://www.triberural.com.au/news-and-updates)  
+The URL `/blog` does **not** work on this site (404). The menu item is **News and Updates**.
+
 ---
 
 ## What this project does (client summary)

@@ -23,6 +23,8 @@ def apply_stealth(page):
 # ---------------------------------------------------------------------------
 PRODUCTION_SPREADSHEET_ID = "18c9Ly0omriZ6hUUQQVPs4kRx7j_j46tavLtXHdG2jts"
 PRODUCTION_BASE_URL       = "https://coconut-radish-an89.squarespace.com"
+# Public blog listing (not /blog — that URL 404s on this site)
+PUBLIC_BLOG_URL           = "https://www.triberural.com.au/news-and-updates"
 SCOPES                    = ["https://www.googleapis.com/auth/spreadsheets"]
 
 BOOKING_LINK    = "https://forms.clickup.com/90161562352/f/2kz0rgqg-676/WM5FMNFXZQWBKHRIBF"
@@ -290,47 +292,62 @@ def dump_row_diagnostics(rows_with_meta):
 
 
 def select_pending_rows(rows_with_meta):
+    """
+    Daily production rule: only rows where column C = today (Melbourne) and column D allows run.
+    Older Pending rows are never auto-posted (missed days stay manual).
+    """
     today = today_local()
+    scheduled = os.getenv("SCHEDULED_RUN", "").strip().lower() in ("1", "true", "yes")
     print(f"Today (Australia/Melbourne): {today.isoformat()}")
-    pending = []
+    if scheduled:
+        print("Scheduled daily run — will post at most one row: date=today, status=Pending.")
+
+    today_rows = []
     for offset, row, formatted_date in rows_with_meta:
         sheet_row = offset + 2
         status = row[3]
-        if not is_runnable_status(status):
-            continue
         post_date = parse_sheet_date(row[2])
         if post_date is None and formatted_date:
             post_date = parse_sheet_date(formatted_date)
+
         if post_date is None:
-            print(
-                f"Row {sheet_row}: skip — could not parse date "
-                f"raw={row[2]!r} formatted={formatted_date!r} status={status!r}"
-            )
             continue
         if post_date > today:
-            print(
-                f"Row {sheet_row}: skip — scheduled {post_date.isoformat()} "
-                f"is after today {today.isoformat()}"
-            )
             continue
-        title_preview = str(row[0])[:60]
-        status_note = (
-            " (retry Processing)"
-            if normalize_status(status) == "processing"
-            else ""
-        )
-        print(
-            f"Row {sheet_row}: queued — date {post_date.isoformat()}, "
-            f"status={normalize_status(status)!r}{status_note}, "
-            f"title={title_preview!r}..."
-        )
-        pending.append((offset, row, post_date))
+        if post_date < today:
+            if is_pending_status(status) or normalize_status(status) == "processing":
+                print(
+                    f"Row {sheet_row}: skip — date {post_date.isoformat()} is before today; "
+                    "missed days are not auto-posted."
+                )
+            continue
 
-    pending.sort(key=lambda item: item[2])
-    if pending:
-        dates = sorted({item[2].isoformat() for item in pending})
-        print(f"Processing {len(pending)} pending row(s) across date(s): {', '.join(dates)}")
-    return pending
+        # post_date == today
+        if scheduled:
+            if not is_pending_status(status):
+                if normalize_status(status) not in ("posted", ""):
+                    print(
+                        f"Row {sheet_row}: skip — status {status!r} "
+                        f"(scheduled run requires Pending for today)."
+                    )
+                continue
+        elif not is_runnable_status(status):
+            continue
+        elif normalize_status(status) == "processing" and post_date != today:
+            continue
+
+        title_preview = str(row[0])[:60]
+        print(
+            f"Row {sheet_row}: selected — sheet date {post_date.isoformat()} = today, "
+            f"status={normalize_status(status)!r}, title={title_preview!r}..."
+        )
+        today_rows.append((offset, row, post_date))
+
+    if today_rows:
+        print(f"Will publish {len(today_rows)} row(s) for {today.isoformat()}.")
+    else:
+        print(f"No Pending row with sheet date = today ({today.isoformat()}).")
+    return today_rows
 
 
 def update_sheet_status(service, tab, row_index, status):
@@ -507,9 +524,19 @@ def navigate_to_blog_composer(page):
     page.goto(f"{base}/config/pages", wait_until="domcontentloaded", timeout=90000)
     time.sleep(6)
 
-    blog_nav = page.get_by_text("Blog", exact=True)
-    blog_nav.first.wait_for(state="visible", timeout=45000)
-    blog_nav.first.click()
+    opened = False
+    for label in ("News and Updates", "Blog"):
+        blog_nav = page.get_by_text(label, exact=True)
+        if blog_nav.count():
+            blog_nav.first.wait_for(state="visible", timeout=45000)
+            blog_nav.first.click()
+            print(f"Opened blog page in admin: {label!r}")
+            opened = True
+            break
+    if not opened:
+        raise RuntimeError(
+            "Could not find blog page in Pages panel (look for 'News and Updates' or 'Blog')."
+        )
     time.sleep(5)
 
     add_post = page.locator('[aria-label="Add blog post"]').first
@@ -878,20 +905,38 @@ def run_automation():
     rows_with_meta = fetch_sheet_rows(service, tab)
     work_items     = select_pending_rows(rows_with_meta)
 
+    force_row = os.getenv("FORCE_SHEET_ROW", "").strip()
+    if os.getenv("SCHEDULED_RUN", "").strip().lower() in ("1", "true", "yes"):
+        force_row = ""
+    if force_row.isdigit():
+        target = int(force_row)
+        forced = []
+        for offset, row, formatted_date in rows_with_meta:
+            if offset + 2 != target:
+                continue
+            post_date = parse_sheet_date(row[2]) or parse_sheet_date(formatted_date)
+            if post_date is None:
+                break
+            forced.append((offset, row, post_date))
+            print(f"FORCE_SHEET_ROW={target} — publishing row {target} only (sheet date {post_date}).")
+            break
+        work_items = forced
+
     if not work_items:
         dump_row_diagnostics(rows_with_meta)
-        print("No pending posts found for today or earlier. Exiting.")
+        print("No post to publish for today. Exiting.")
         if os.getenv("GITHUB_ACTIONS", "").lower() in ("true", "1"):
             raise SystemExit(
-                "No Pending rows with date <= today (Melbourne). "
-                "Set column D to Pending (or leave Processing to retry) on SPREADSHEET_ID."
+                f"No Pending row with sheet date = today ({today_local().isoformat()}, "
+                "Australia/Melbourne). Set column D to Pending for that row."
             )
         return
 
-    if is_dry_run():
-        limit = max(1, int(os.getenv("TEST_ROW_LIMIT", "1")))
+    limit_raw = os.getenv("TEST_ROW_LIMIT", "").strip()
+    if is_dry_run() or limit_raw or os.getenv("GITHUB_ACTIONS", "").lower() in ("true", "1"):
+        limit = max(1, int(limit_raw or "1"))
         work_items = work_items[:limit]
-        print(f"DRY RUN: processing {len(work_items)} row(s) (TEST_ROW_LIMIT={limit})")
+        print(f"Processing {len(work_items)} row(s) (limit={limit})")
 
     EMAIL    = os.getenv("SQ_EMAIL")
     PASSWORD = os.getenv("SQ_PASSWORD")
@@ -971,13 +1016,30 @@ def run_automation():
                     if img_path and os.path.exists(img_path):
                         upload_featured_image_via_post_settings(page, img_path)
 
+                    published_via_date = False
+                    if not is_dry_run():
+                        from set_post_publish_date import set_publish_date_in_editor
+
+                        today = today_local()
+                        if post_date < today:
+                            # Prefer Save & Publish with sheet date; else publish now + fix date workflow
+                            published_via_date = set_publish_date_in_editor(
+                                page, post_date, before_publish=True
+                            )
+                            if not published_via_date:
+                                print(
+                                    f"Row {sheet_row}: Save & Publish not available in editor — "
+                                    f"will publish now; run fix_publish_date for {post_date.isoformat()}."
+                                )
+                        # Today's row: Publish Now is fine (stamp will match sheet date)
+
                     if is_dry_run():
                         page.screenshot(path=_test_output_path(f"row_{sheet_row}_dry_run_editor.png"))
                         print(
                             f"DRY RUN: editor filled for row {sheet_row} — "
                             "publish skipped; sheet status unchanged."
                         )
-                    else:
+                    elif not published_via_date:
                         run_publish_confirmation_flow(page)
                         update_sheet_status(service, tab, offset, "Posted")
                         print(f"✅  Row {sheet_row} — post '{title}' published successfully.")

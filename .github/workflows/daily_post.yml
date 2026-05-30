@@ -1,17 +1,28 @@
 name: Daily Blog Poster
 
-# Daily 07:00 Australia/Melbourne (AEST, UTC+10): cron 21:00 UTC = 07:00 Melbourne same calendar day.
-# Posts the row whose sheet date matches that Melbourne day (column C), status Pending.
-# During AEDT (Oct–Apr): change to '0 20 * * *' for 07:00 Melbourne.
+# 07:00 Australia/Melbourne (AEST, UTC+10): cron 21:00 UTC on the previous calendar day.
+# Example: 21:00 UTC on 24 May → 07:00 AEST on 25 May.
+# During AEDT (Oct–Apr): use cron '0 20 * * *' instead of 21.
+#
+# Scheduled behaviour: read production sheet → find row where column C = today (Melbourne)
+# and column D = Pending → publish exactly one post. Older Pending rows are ignored.
 on:
   schedule:
-    - cron: '0 21 * * *'  # 7:00 AM Melbourne (AEST)
+    - cron: '0 21 * * *'
   workflow_dispatch:
     inputs:
       test_row_limit:
-        description: 'Max posts this run (use 1 for a smoke test; leave empty for all due rows)'
+        description: 'Max posts this run (manual only; scheduled runs always 1)'
         required: false
         default: ''
+      force_sheet_row:
+        description: 'Manual recovery — sheet row number (ignored on scheduled runs)'
+        required: false
+        default: ''
+
+concurrency:
+  group: daily-blog-post
+  cancel-in-progress: false
 
 jobs:
   post:
@@ -80,12 +91,14 @@ jobs:
           SQ_PASSWORD:          ${{ secrets.SQ_PASSWORD }}
           GOOGLE_CREDENTIALS:   ${{ secrets.GOOGLE_CREDENTIALS }}
           SPREADSHEET_ID:       ${{ secrets.SPREADSHEET_ID }}
-          POLLINATIONS_API_KEY: ${{ secrets.POLLINATIONS_AI }}
+          POLLINATIONS_API_KEY:   ${{ secrets.POLLINATIONS_AI }}
           HEADLESS:             "true"
-          TEST_ROW_LIMIT:       ${{ github.event.inputs.test_row_limit }}
           GITHUB_ACTIONS:       "true"
-          # Production only — never set DRY_RUN or test SPREADSHEET_ID/BASE_URL here.
           DRY_RUN:              ""
+          # Scheduled 7 AM Melbourne: today’s Pending row only, one post, no force row.
+          SCHEDULED_RUN:          ${{ github.event_name == 'schedule' && '1' || '' }}
+          TEST_ROW_LIMIT:         ${{ github.event_name == 'schedule' && '1' || github.event.inputs.test_row_limit }}
+          FORCE_SHEET_ROW:        ${{ github.event_name == 'schedule' && '' || github.event.inputs.force_sheet_row }}
         run: python automation.py
 
       - name: Upload debug screenshots on failure
