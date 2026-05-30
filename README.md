@@ -13,7 +13,7 @@ Design inspiration for layout and tone: [Metro Express blog](https://www.metroex
 | 1 | You add rows to a shared Google Sheet (title, body, date, status). |
 | 2 | Once per day (or on demand), automation checks for **Pending** posts scheduled for **today or earlier** (Australia/Melbourne date). |
 | 3 | For each eligible row, an **AI hero image** is generated to match the post title. |
-| 4 | The bot opens Squarespace, fills **title** and **body** (with a branded footer and quote link), uploads the **featured image**, and clicks **Publish**. |
+| 4 | The bot opens Squarespace, fills **title** and **body** (sheet text plus a plain-text footer), uploads the **featured image**, and clicks **Publish**. |
 | 5 | Column D in the sheet is set to **Posted** (or **Failed** if something went wrong, so you can retry). |
 
 You control **what** gets published by editing the spreadsheet. You do not need to log into Squarespace for every post.
@@ -52,11 +52,10 @@ Share this sheet with the Google service account email (from your `credentials.j
 
 ### Footer added to every post
 
-Each published article automatically includes:
-
-- Tribe Rural Logistics positioning copy  
-- **Request a quote online** button → [ClickUp booking form](https://forms.clickup.com/90161562352/f/2kz0rgqg-676/WM5FMNFXZQWBKHRIBF)  
-- Published date and ABN line (*Tribe Rural Logistics Pty Ltd · ABN 40 677 940 840*)
+- **Bold** “Ready to book freight or a small move?”
+- Clickable **Request a quote online →** link ([ClickUp form](https://forms.clickup.com/90161562352/f/2kz0rgqg-676/WM5FMNFXZQWBKHRIBF))
+- Published date (from column C) and ABN line  
+- Town in the footer matches the article (e.g. Benalla, not Mansfield)
 
 ---
 
@@ -76,7 +75,7 @@ flowchart LR
     SQ[Squarespace blog]
   end
   subgraph trigger [Trigger]
-    GH[GitHub Actions daily]
+    GH[GitHub Actions ~7am Melbourne]
     Local[Manual run on PC]
   end
   GH --> Script
@@ -108,6 +107,8 @@ Squarespace often **blocks login from cloud servers**, so the workflow uses a sa
 | `session_utils.py` / `shrink_auth.py` | Shrinks the session file so it fits GitHub’s secret size limit. |
 | `requirements.txt` | Python dependencies. |
 | `run.ps1` | Windows shortcut to install deps and run locally. |
+| `run_tests.py` / `run_test.sh` | Safe layered tests using `.env.test` (test sheet + duplicate site). |
+| `.env.test.example` | Template for test-only env vars (copy to `.env.test`). |
 | `.github/workflows/daily_post.yml` | CI/CD workflow for daily posting. |
 
 **Not in git (local / secrets only):** `auth.json`, `credentials.json`, `auth_github.txt`, `.env`
@@ -149,7 +150,78 @@ Optional: `python shrink_auth.py` if you already have `auth.json` and only need 
 | `GOOGLE_CREDENTIALS` | **Yes** | Full service account JSON (one line). |
 | `SQ_EMAIL` | Optional | Squarespace email (fallback; CI normally uses `auth.json` only). |
 | `SQ_PASSWORD` | Optional | Squarespace password (fallback). |
-| `POLLINATIONS_API_KEY` | Optional | For faster/reliable AI images from `gen.pollinations.ai`. |
+| `SPREADSHEET_ID` | **Yes** | Production Google Sheet ID (`18c9Ly0omriZ6hUUQQVPs4kRx7j_j46tavLtXHdG2jts`). |
+| `POLLINATIONS_AI` | Optional | Pollinations API key (workflow maps to `POLLINATIONS_API_KEY`). |
+
+### Daily schedule (7:00 Melbourne)
+
+GitHub Actions uses **UTC** cron only. The workflow runs at **`0 21 * * *` (21:00 UTC)** = **07:00 Australia/Melbourne** during **AEST** (standard time, roughly April–October). Each run posts the row whose column C date is **that Melbourne day** and column D is **Pending**. During **AEDT**, change the cron to `0 20 * * *` for 07:00 Melbourne.
+
+Posting rules (unchanged):
+
+- Only rows with status **Pending** and column C date **≤ today** (Melbourne).
+- If any **Pending** row has column C **= today**, only those rows run; otherwise earlier dates backlog.
+
+---
+
+## Going live on GitHub (checklist)
+
+Do this **after** local layers 1–3 pass on the **test sheet** and you are happy with the footer (bold + link) and featured image.
+
+1. **Commit and push** this repo to `main` (or merge your PR).
+2. **Refresh `AUTH_JSON_BASE64`** — on your Mac, after a successful `python generate_session.py`, paste the new line from `auth_github.txt` into GitHub → Settings → Secrets → Actions.
+3. **Confirm secrets** — `GOOGLE_CREDENTIALS`, `AUTH_JSON_BASE64`. Optional: `SQ_EMAIL`, `SQ_PASSWORD`, `POLLINATIONS_AI`.
+4. **`SPREADSHEET_ID` for testing vs live**
+   - **GitHub smoke test (after push):** set `SPREADSHEET_ID` to the **test copy** ID: `13LSgjknAy0r6OFg4kER1SE5sFVTgfpjKMuHY75okvsk` (share that sheet with the service account).
+   - **Daily production:** change the same secret to the **live** sheet: `18c9Ly0omriZ6hUUQQVPs4kRx7j_j46tavLtXHdG2jts`.
+5. **Smoke test on GitHub (before relying on the clock)**  
+   - Actions → **Daily Blog Poster** → **Run workflow**  
+   - Set **test_row_limit** to `1`  
+   - Ensure one row on that sheet is **Pending** with date **≤ today**  
+   - Check the run log and the live blog post (bold footer, clickable quote link, image).
+6. **Enable the daily run** — leave the schedule as-is for ~7:00 Melbourne; no further action unless you change the cron.
+7. **Sheet workflow for your client** — set each day’s row to **Pending** before 7:00 Melbourne on that date (or earlier); automation sets **Posted** / **Failed**.
+
+`DRY_RUN` cannot be used in GitHub Actions (by design). All CI runs are real publishes to the production site and sheet.
+
+---
+
+## Safe testing (Option D — production untouched)
+
+Use a **copy of the Google Sheet** and a **duplicate Squarespace site** so the live Tribe blog and production spreadsheet are never published to or updated during tests.
+
+| Layer | Command | What it does | Touches production? |
+|-------|---------|--------------|---------------------|
+| **1** | `python run_tests.py --layer 1` | Reads **test** sheet, builds body, saves image to `test_output/` | **No** (blocked if sheet ID is production) |
+| **2** | `python run_tests.py --layer 2` | Opens **test** site editor, fills post, **does not publish** | **No** |
+| **3** | `python run_tests.py --layer 3` | Full publish on **test** site + updates **test** sheet only | **No** (script refuses production IDs/URLs) |
+
+### One-time test setup
+
+1. **Google Sheet:** File → **Make a copy** → share with service account → put copy ID in `.env.test` as `SPREADSHEET_ID`.
+2. **Squarespace:** Duplicate site (or trial) → put duplicate URL in `.env.test` as `BASE_URL`.
+3. Copy config: `cp .env.test.example .env.test` and edit.
+4. Session: same `auth.json` from `generate_session.py` (one login covers sites on your account).
+
+```bash
+cp .env.test.example .env.test
+# edit .env.test
+chmod +x run_test.sh
+./run_test.sh 1    # layer 1
+./run_test.sh 2    # layer 2 (visible browser: HEADLESS=false in .env.test)
+```
+
+### Safety guards (built into `automation.py`)
+
+- **`DRY_RUN=1`:** never publishes; never writes column D (`Pending` / `Posted` / etc.).
+- **Production sheet in dry run:** blocked unless `ALLOW_PRODUCTION_SHEET_READ=1` (read-only diagnostics only).
+- **Production site in dry-run browser:** blocked unless `ALLOW_PRODUCTION_SITE=1` (not recommended).
+- **GitHub Actions:** `DRY_RUN` is forbidden on the scheduled workflow.
+- **Daily production job:** unchanged — no `.env.test`, no `DRY_RUN`.
+
+Manual production run (unchanged): `python automation.py` with no test env vars.
+
+After your friend sends the Google JSON: save it as `credentials.json` in this folder (**do not commit it**). Run `python check_setup.py` to confirm everything before layer 1.
 
 ---
 
@@ -200,7 +272,7 @@ The bot uploads the generated JPEG through **Post Settings** (not the site-wide 
 
 **Strengths**
 
-- Consistent branding and footer on every post  
+- Consistent plain-text footer on every post (correct regional town when detected)  
 - Clear sheet-based workflow (Pending → Posted / Failed)  
 - Runs automatically every day without manual Squarespace login (after initial session setup)  
 - Dates respect **Melbourne** business timezone  

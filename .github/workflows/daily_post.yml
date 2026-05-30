@@ -1,9 +1,17 @@
 name: Daily Blog Poster
 
+# Daily 07:00 Australia/Melbourne (AEST, UTC+10): cron 21:00 UTC = 07:00 Melbourne same calendar day.
+# Posts the row whose sheet date matches that Melbourne day (column C), status Pending.
+# During AEDT (Oct–Apr): change to '0 20 * * *' for 07:00 Melbourne.
 on:
   schedule:
-    - cron: '0 21 * * *'
+    - cron: '0 21 * * *'  # 7:00 AM Melbourne (AEST)
   workflow_dispatch:
+    inputs:
+      test_row_limit:
+        description: 'Max posts this run (use 1 for a smoke test; leave empty for all due rows)'
+        required: false
+        default: ''
 
 jobs:
   post:
@@ -18,30 +26,47 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Restore auth.json
-        run: |
-          if [ -n "$AUTH_JSON_BASE64" ]; then
-            python3 -c "
-import base64, gzip, os
-raw = base64.b64decode(os.environ['AUTH_JSON_BASE64'].strip())
-if raw[:2] == b'\x1f\x8b':
-    raw = gzip.decompress(raw)
-open('auth.json', 'wb').write(raw)
-print(f'Session restored from AUTH_JSON_BASE64 ({len(raw)} bytes).')
-"
-          else
-            echo "No AUTH_JSON_BASE64 secret — trying cache."
-          fi
-        env:
-          AUTH_JSON_BASE64: ${{ secrets.AUTH_JSON_BASE64 }}
-
-      - name: Restore auth from cache
-        if: ${{ secrets.AUTH_JSON_BASE64 == '' }}
-        uses: actions/cache@v4
+      - name: Restore auth from cache (fallback only)
+        uses: actions/cache/restore@v4
         with:
           path: auth.json
           key: squarespace-auth-session
           restore-keys: squarespace-auth-session
+
+      - name: Restore auth.json from secret (overrides cache)
+        env:
+          AUTH_JSON_BASE64: ${{ secrets.AUTH_JSON_BASE64 }}
+        run: python3 restore_auth.py
+        continue-on-error: true
+
+      - name: Verify auth.json exists
+        run: |
+          if [ ! -f auth.json ]; then
+            echo "::error::auth.json missing. Set AUTH_JSON_BASE64 or restore cache from a prior successful run."
+            exit 1
+          fi
+          ls -la auth.json
+
+      - name: Check session expiry
+        run: |
+          python3 - <<'EOF'
+          import json, sys
+          from datetime import datetime, timezone
+          with open("auth.json") as f:
+              state = json.load(f)
+          cookies = state.get("cookies", [])
+          now = datetime.now(timezone.utc).timestamp()
+          expiring = [c for c in cookies if isinstance(c.get("expires"), (int, float)) and 0 < c["expires"] < now + 14 * 86400]
+          expired  = [c for c in cookies if isinstance(c.get("expires"), (int, float)) and 0 < c["expires"] < now]
+          if expired:
+              print("::error::Squarespace session has EXPIRED cookies. Run generate_session.py locally and update AUTH_JSON_BASE64 secret.")
+              sys.exit(1)
+          elif expiring:
+              print("::warning::Squarespace session cookies expire within 14 days. Regenerate auth.json soon to avoid automation failure.")
+          else:
+              print("Session cookies are valid.")
+          EOF
+        continue-on-error: true
 
       - name: Install dependencies
         run: |
@@ -51,14 +76,29 @@ print(f'Session restored from AUTH_JSON_BASE64 ({len(raw)} bytes).')
 
       - name: Run automation
         env:
-          SQ_EMAIL:           ${{ secrets.SQ_EMAIL }}
-          SQ_PASSWORD:        ${{ secrets.SQ_PASSWORD }}
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-          GITHUB_ACTIONS:     "true"
+          SQ_EMAIL:             ${{ secrets.SQ_EMAIL }}
+          SQ_PASSWORD:          ${{ secrets.SQ_PASSWORD }}
+          GOOGLE_CREDENTIALS:   ${{ secrets.GOOGLE_CREDENTIALS }}
+          SPREADSHEET_ID:       ${{ secrets.SPREADSHEET_ID }}
+          POLLINATIONS_API_KEY: ${{ secrets.POLLINATIONS_AI }}
+          HEADLESS:             "true"
+          TEST_ROW_LIMIT:       ${{ github.event.inputs.test_row_limit }}
+          GITHUB_ACTIONS:       "true"
+          # Production only — never set DRY_RUN or test SPREADSHEET_ID/BASE_URL here.
+          DRY_RUN:              ""
         run: python automation.py
 
+      - name: Upload debug screenshots on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots-${{ github.run_id }}
+          path: "*.png"
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Save session to cache
-        if: always()
+        if: success()
         uses: actions/cache/save@v4
         with:
           path: auth.json
