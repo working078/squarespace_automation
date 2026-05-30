@@ -26,18 +26,18 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Restore auth.json from secret
-        env:
-          AUTH_JSON_BASE64: ${{ secrets.AUTH_JSON_BASE64 }}
-        run: python3 restore_auth.py
-        continue-on-error: true
-
-      - name: Restore auth from cache (fallback if secret missing)
+      - name: Restore auth from cache (fallback only)
         uses: actions/cache/restore@v4
         with:
           path: auth.json
           key: squarespace-auth-session
           restore-keys: squarespace-auth-session
+
+      - name: Restore auth.json from secret (overrides cache)
+        env:
+          AUTH_JSON_BASE64: ${{ secrets.AUTH_JSON_BASE64 }}
+        run: python3 restore_auth.py
+        continue-on-error: true
 
       - name: Verify auth.json exists
         run: |
@@ -68,7 +68,7 @@ jobs:
         run: python automation.py
 
       - name: Save session to cache
-        if: always()
+        if: success()
         uses: actions/cache/save@v4
         with:
           path: auth.json
