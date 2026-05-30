@@ -828,7 +828,14 @@ def ensure_squarespace_session(page, context, email, password) -> None:
             raise RuntimeError(
                 "Session expired — re-run generate_session.py or restore AUTH_JSON_BASE64."
             )
-    if page.get_by_text("Blog", exact=True).count() == 0:
+    # Confirm the admin UI loaded by checking for any known blog nav label.
+    # This site uses "News and Updates"; generic Squarespace sites use "Blog".
+    blog_nav_labels = ("News and Updates", "Blog", "Pages")
+    admin_loaded = any(
+        page.get_by_text(label, exact=True).count() > 0
+        for label in blog_nav_labels
+    )
+    if not admin_loaded:
         raise RuntimeError(
             "Session loaded but site editor did not open. "
             "Re-run generate_session.py while logged into this site."
