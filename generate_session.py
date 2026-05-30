@@ -62,8 +62,20 @@ with sync_playwright() as p:
     print("=" * 60)
     input("\nPress ENTER only when you see the Squarespace dashboard...")
 
-    page.goto(DASHBOARD_URL, wait_until="domcontentloaded", timeout=120000)
-    page.wait_for_timeout(4000)
+    try:
+        page.goto(DASHBOARD_URL, wait_until="domcontentloaded", timeout=120000)
+    except Exception as nav_err:
+        # Squarespace sometimes redirects /config/ → / mid-navigation.
+        # Playwright throws "interrupted by another navigation" in that case.
+        # Just wait for wherever it landed and carry on.
+        if "interrupted by another navigation" in str(nav_err).lower():
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=30000)
+            except Exception:
+                pass
+        else:
+            raise
+    page.wait_for_timeout(3000)
     current = page.url
     print(f"\nCurrent URL: {current[:100]}...")
 
