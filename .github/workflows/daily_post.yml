@@ -47,6 +47,27 @@ jobs:
           fi
           ls -la auth.json
 
+      - name: Check session expiry
+        run: |
+          python3 - <<'EOF'
+          import json, sys
+          from datetime import datetime, timezone
+          with open("auth.json") as f:
+              state = json.load(f)
+          cookies = state.get("cookies", [])
+          now = datetime.now(timezone.utc).timestamp()
+          expiring = [c for c in cookies if isinstance(c.get("expires"), (int, float)) and 0 < c["expires"] < now + 14 * 86400]
+          expired  = [c for c in cookies if isinstance(c.get("expires"), (int, float)) and 0 < c["expires"] < now]
+          if expired:
+              print("::error::Squarespace session has EXPIRED cookies. Run generate_session.py locally and update AUTH_JSON_BASE64 secret.")
+              sys.exit(1)
+          elif expiring:
+              print("::warning::Squarespace session cookies expire within 14 days. Regenerate auth.json soon to avoid automation failure.")
+          else:
+              print("Session cookies are valid.")
+          EOF
+        continue-on-error: true
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -66,6 +87,15 @@ jobs:
           # Production only — never set DRY_RUN or test SPREADSHEET_ID/BASE_URL here.
           DRY_RUN:              ""
         run: python automation.py
+
+      - name: Upload debug screenshots on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots-${{ github.run_id }}
+          path: "*.png"
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Save session to cache
         if: success()

@@ -326,17 +326,10 @@ def select_pending_rows(rows_with_meta):
         )
         pending.append((offset, row, post_date))
 
-    today_rows = [item for item in pending if item[2] == today]
-    if today_rows:
-        print(
-            f"Using {len(today_rows)} row(s) with sheet date = today ({today.isoformat()})"
-        )
-        return today_rows
+    pending.sort(key=lambda item: item[2])
     if pending:
-        print(
-            "No Pending row for today — using earlier scheduled date(s). "
-            "Add a row with today's date in column C for same-day posting."
-        )
+        dates = sorted({item[2].isoformat() for item in pending})
+        print(f"Processing {len(pending)} pending row(s) across date(s): {', '.join(dates)}")
     return pending
 
 
