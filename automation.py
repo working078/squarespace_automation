@@ -969,12 +969,14 @@ def run_automation():
         # FIX #3: Correct stealth call (works with any playwright-stealth version)
         apply_stealth(page)
 
+        session_verified = False
         try:
             # --- Verify session is valid ---
             # Squarespace blocks GitHub Actions IPs with a blank page.
             # auth.json MUST be pre-generated locally via generate_session.py.
             # If no session file exists, fail immediately with a clear message.
             ensure_squarespace_session(page, context, EMAIL, PASSWORD)
+            session_verified = True
 
             # --- Process each queued row ---
             for offset, row, post_date in work_items:
@@ -1065,6 +1067,15 @@ def run_automation():
             raise SystemExit(1) from fatal
 
         finally:
+            # Save refreshed session cookies so the secret auto-renewal step
+            # in the workflow can pick them up. Only save when the session was
+            # confirmed valid — avoids persisting an expired/failed state.
+            if session_verified:
+                try:
+                    context.storage_state(path=AUTH_STATE_PATH)
+                    print(f"Session cookies refreshed and saved → {AUTH_STATE_PATH}")
+                except Exception as _e:
+                    print(f"Warning: could not save refreshed session: {_e}")
             browser.close()
 
 

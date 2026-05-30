@@ -110,6 +110,26 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+      - name: Auto-refresh session secret
+        # After a successful post the browser session has refreshed Squarespace
+        # cookies. Slim auth.json and push the updated payload back to the
+        # AUTH_JSON_BASE64 secret so the session never expires.
+        # Requires GH_PAT secret: a Fine-grained PAT with Secrets read+write
+        # for this repo (Settings → Developer settings → Personal access tokens).
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::GH_PAT secret not set — session will expire in ~30 days."
+            echo "Create a Fine-grained PAT with Secrets read+write and add it as GH_PAT."
+          else
+            python3 shrink_auth.py
+            gh secret set AUTH_JSON_BASE64 --body "$(cat auth_github.txt)" --repo "$GITHUB_REPOSITORY"
+            echo "AUTH_JSON_BASE64 secret refreshed with latest session cookies ✅"
+          fi
+        continue-on-error: true
+
       - name: Save session to cache
         if: success()
         uses: actions/cache/save@v4
