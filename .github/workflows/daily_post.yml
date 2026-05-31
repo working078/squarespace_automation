@@ -1,18 +1,25 @@
 name: Daily Blog Poster
 
-# Primary:  21:00 UTC = 07:00 AEST (UTC+10) Melbourne — fires every day.
-# Backup:   23:00 UTC = 09:00 AEST Melbourne — safety net if GitHub skips the primary.
-# GitHub's scheduler is best-effort and can be delayed/skipped under load.
-# The concurrency group prevents double-posting; if today's row is already
-# 'Posted' the backup run exits cleanly (green) without re-posting.
-# During AEDT (Oct–Apr, UTC+11): change to '0 20 * * *' and '0 22 * * *'.
+# TRIGGER ARCHITECTURE (most-reliable to least-reliable):
 #
-# Scheduled behaviour: read production sheet → find row where column C = today (Melbourne)
-# and column D = Pending → publish exactly one post. Older Pending rows are ignored.
+#  1. cron-job.org (PRIMARY — 99.9% reliable external trigger)
+#     Sends a repository_dispatch event via GitHub API every day at 21:00 UTC
+#     (07:00 Melbourne AEST). Setup: https://cron-job.org → see README.
+#
+#  2. GitHub cron schedule (FALLBACK — best-effort, can be delayed/skipped)
+#     Fires at 21:00 UTC and 23:00 UTC as a safety net if cron-job.org misses.
+#     During AEDT (Oct–Apr, UTC+11): change to '0 20 * * *' and '0 22 * * *'.
+#
+#  3. workflow_dispatch (MANUAL — for recovery runs)
+#
+# The concurrency group prevents double-posting across all trigger types.
+# If today's row is already 'Posted' any subsequent trigger exits cleanly.
 on:
+  repository_dispatch:
+    types: [daily-blog-post]   # Fired by cron-job.org via GitHub API
   schedule:
-    - cron: '0 21 * * *'   # Primary  — 07:00 AM Melbourne (AEST)
-    - cron: '0 23 * * *'   # Backup   — 09:00 AM Melbourne (if primary missed)
+    - cron: '0 21 * * *'       # Fallback 1 — 07:00 AM Melbourne (AEST)
+    - cron: '0 23 * * *'       # Fallback 2 — 09:00 AM Melbourne
   workflow_dispatch:
     inputs:
       test_row_limit:
@@ -99,10 +106,11 @@ jobs:
           HEADLESS:             "true"
           GITHUB_ACTIONS:       "true"
           DRY_RUN:              ""
-          # Scheduled 7 AM Melbourne: today’s Pending row only, one post, no force row.
-          SCHEDULED_RUN:          ${{ github.event_name == 'schedule' && '1' || '' }}
-          TEST_ROW_LIMIT:         ${{ github.event_name == 'schedule' && '1' || github.event.inputs.test_row_limit }}
-          FORCE_SHEET_ROW:        ${{ github.event_name == 'schedule' && '' || github.event.inputs.force_sheet_row }}
+          # repository_dispatch (cron-job.org) and schedule both count as scheduled runs:
+          # today’s Pending row only, one post, no force row override.
+          SCHEDULED_RUN:          ${{ (github.event_name == ‘schedule’ || github.event_name == ‘repository_dispatch’) && ‘1’ || ‘’ }}
+          TEST_ROW_LIMIT:         ${{ (github.event_name == ‘schedule’ || github.event_name == ‘repository_dispatch’) && ‘1’ || github.event.inputs.test_row_limit }}
+          FORCE_SHEET_ROW:        ${{ (github.event_name == ‘schedule’ || github.event_name == ‘repository_dispatch’) && ‘’ || github.event.inputs.force_sheet_row }}
         run: python automation.py
 
       - name: Upload debug screenshots on failure
