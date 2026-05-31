@@ -279,16 +279,60 @@ def fetch_sheet_rows(service, tab):
     return rows
 
 
-def dump_row_diagnostics(rows_with_meta):
+def dump_row_diagnostics(rows_with_meta, *, today_only=False):
+    """Print sheet rows relevant when nothing was queued (avoid dumping 700+ lines)."""
+    today = today_local()
     print("--- Sheet diagnostic (no posts queued) ---")
+    shown = 0
     for offset, row, formatted_date in rows_with_meta:
         sheet_row = offset + 2
+        post_date = parse_sheet_date(row[2]) or parse_sheet_date(formatted_date)
+        status = normalize_status(row[3])
+        if today_only:
+            if post_date != today and status != "pending":
+                continue
+            if post_date and post_date > today + timedelta(days=7):
+                continue
         title_preview = repr(str(row[0])[:80])
         print(
-            f"Row {sheet_row}: A={title_preview} | B(len)={len(str(row[1]))} | "
-            f"C(raw)={row[2]!r} C(fmt)={formatted_date!r} | D={row[3]!r}"
+            f"Row {sheet_row}: A={title_preview} | "
+            f"C(fmt)={formatted_date!r} | D={row[3]!r}"
         )
+        shown += 1
+        if today_only and shown >= 15:
+            break
+    if shown == 0:
+        print(f"(No rows with date = today {today.isoformat()} found in sheet.)")
     print("--- End diagnostic ---")
+
+
+def log_today_rows_summary(rows_with_meta) -> None:
+    """Explain why today's scheduled run did not publish."""
+    today = today_local()
+    matches = []
+    for offset, row, formatted_date in rows_with_meta:
+        post_date = parse_sheet_date(row[2]) or parse_sheet_date(formatted_date)
+        if post_date != today:
+            continue
+        sheet_row = offset + 2
+        matches.append((sheet_row, normalize_status(row[3]), str(row[0])[:50]))
+    if not matches:
+        print(
+            f"No sheet rows with column C = today ({today.strftime('%d/%m/%y')}). "
+            "Add a row with today's date and status Pending."
+        )
+        return
+    print(f"Rows with today's date ({today.isoformat()}):")
+    for sheet_row, status, title in matches:
+        if status == "pending":
+            print(f"  Row {sheet_row}: Pending — should publish (check date parsing).")
+        elif status == "posted":
+            print(
+                f"  Row {sheet_row}: Already Posted — '{title}...' "
+                "(nothing to do; mark a new row Pending for today if you need another post)."
+            )
+        else:
+            print(f"  Row {sheet_row}: status={status!r} — must be Pending to auto-publish.")
 
 
 def select_pending_rows(rows_with_meta):
@@ -325,7 +369,13 @@ def select_pending_rows(rows_with_meta):
         # post_date == today
         if scheduled:
             if not is_pending_status(status):
-                if normalize_status(status) not in ("posted", ""):
+                st = normalize_status(status)
+                if st == "posted":
+                    print(
+                        f"Row {sheet_row}: skip — date is today but status is Posted "
+                        f"(already published)."
+                    )
+                elif st not in ("",):
                     print(
                         f"Row {sheet_row}: skip — status {status!r} "
                         f"(scheduled run requires Pending for today)."
@@ -931,7 +981,7 @@ def run_automation():
 
     if not work_items:
         # Check if today's post was already published by an earlier run
-        # (e.g. the backup schedule fires after the primary already posted).
+        # (e.g. the 09:00 backup schedule fires after the 07:00 primary posted).
         today = today_local()
         already_posted_today = any(
             parse_sheet_date(row[2]) == today
@@ -945,11 +995,19 @@ def run_automation():
                 "Nothing to do. ✅"
             )
             return  # clean exit — not a failure
-        dump_row_diagnostics(rows_with_meta)
+        scheduled = os.getenv("SCHEDULED_RUN", "").strip().lower() in ("1", "true", "yes")
+        log_today_rows_summary(rows_with_meta)
+        dump_row_diagnostics(rows_with_meta, today_only=True)
+        if scheduled:
+            print(
+                f"Scheduled run: nothing to publish for {today.isoformat()} — "
+                "no Pending row with column C = today. Exiting OK."
+            )
+            return
         print("No post to publish for today. Exiting.")
         if os.getenv("GITHUB_ACTIONS", "").lower() in ("true", "1"):
             raise SystemExit(
-                f"No Pending row with sheet date = today ({today_local().isoformat()}, "
+                f"No Pending row with sheet date = today ({today}, "
                 "Australia/Melbourne). Set column D to Pending for that row."
             )
         return
