@@ -1,14 +1,18 @@
 name: Daily Blog Poster
 
-# 07:00 Australia/Melbourne (AEST, UTC+10): cron 21:00 UTC on the previous calendar day.
-# Example: 21:00 UTC on 24 May → 07:00 AEST on 25 May.
-# During AEDT (Oct–Apr): use cron '0 20 * * *' instead of 21.
+# Primary:  21:00 UTC = 07:00 AEST (UTC+10) Melbourne — fires every day.
+# Backup:   23:00 UTC = 09:00 AEST Melbourne — safety net if GitHub skips the primary.
+# GitHub's scheduler is best-effort and can be delayed/skipped under load.
+# The concurrency group prevents double-posting; if today's row is already
+# 'Posted' the backup run exits cleanly (green) without re-posting.
+# During AEDT (Oct–Apr, UTC+11): change to '0 20 * * *' and '0 22 * * *'.
 #
 # Scheduled behaviour: read production sheet → find row where column C = today (Melbourne)
 # and column D = Pending → publish exactly one post. Older Pending rows are ignored.
 on:
   schedule:
-    - cron: '0 21 * * *'
+    - cron: '0 21 * * *'   # Primary  — 07:00 AM Melbourne (AEST)
+    - cron: '0 23 * * *'   # Backup   — 09:00 AM Melbourne (if primary missed)
   workflow_dispatch:
     inputs:
       test_row_limit:

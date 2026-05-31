@@ -930,6 +930,21 @@ def run_automation():
         work_items = forced
 
     if not work_items:
+        # Check if today's post was already published by an earlier run
+        # (e.g. the backup schedule fires after the primary already posted).
+        today = today_local()
+        already_posted_today = any(
+            parse_sheet_date(row[2]) == today
+            and normalize_status(row[3]) == "posted"
+            for _, row, _ in rows_with_meta
+            if row[2]
+        )
+        if already_posted_today:
+            print(
+                f"Today's post ({today.isoformat()}) is already Published. "
+                "Nothing to do. ✅"
+            )
+            return  # clean exit — not a failure
         dump_row_diagnostics(rows_with_meta)
         print("No post to publish for today. Exiting.")
         if os.getenv("GITHUB_ACTIONS", "").lower() in ("true", "1"):
